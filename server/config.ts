@@ -4,7 +4,6 @@
 // from it end up on build command lines, so every field is checked here, once,
 // at startup — a typo fails loudly instead of building the wrong flavor.
 
-import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 export interface FlavorConfig {
@@ -197,25 +196,4 @@ export { fill } from "./template.ts";
 
 export function flavorOf(cfg: FledgeConfig, name: string): FlavorConfig | undefined {
   return cfg.flavors.find((f) => f.name === name);
-}
-
-/** Reads the config: --config <path>, else $FLEDGE_CONFIG, else <repo>/fledge.json. Exits with a readable message. */
-export function loadConfig(repoRoot: string): { config: FledgeConfig; file: string } {
-  const i = process.argv.indexOf("--config");
-  const file = path.resolve(
-    (i >= 0 ? process.argv[i + 1] : undefined) ?? process.env.FLEDGE_CONFIG ?? path.join(repoRoot, "fledge.json"),
-  );
-  if (!existsSync(file)) {
-    console.error(
-      `fledge: no config at ${file}.\n` +
-        "Add a fledge.json to the app's repository (see fledge.example.json), or pass --config /path/to/fledge.json.",
-    );
-    process.exit(1);
-  }
-  try {
-    return { config: parseConfig(JSON.parse(readFileSync(file, "utf8"))), file };
-  } catch (e) {
-    console.error(`fledge: ${file} is invalid — ${(e as Error).message}`);
-    process.exit(1);
-  }
 }

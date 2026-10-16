@@ -61,7 +61,7 @@ function Connection({ icon, label, ok, detail }: { icon: IconSvgElement; label: 
   );
 }
 
-export function ReleasePanel() {
+export function ReleasePanel({ project }: { project: string }) {
   const [connections, setConnections] = useState<Connections | null>(null);
   const [tags, setTags] = useState<ReleaseTag[]>([]);
   const [baseTag, setBaseTag] = useState<string>("");
@@ -85,12 +85,12 @@ export function ReleasePanel() {
   const [publishing, setPublishing] = useState(false);
   const [result, setResult] = useState<PublishResult | null>(null);
   const [publishError, setPublishError] = useState<string | null>(null);
-  const log = useReleaseLog();
+  const log = useReleaseLog(project);
 
   useEffect(() => {
-    void releaseApi.connections().then(setConnections);
-    void releaseApi.settings().then(setSettings);
-    void releaseApi.tags().then((t) => {
+    void releaseApi.connections(project).then(setConnections);
+    void releaseApi.settings(project).then(setSettings);
+    void releaseApi.tags(project).then((t) => {
       setTags(t);
       setBaseTag((b) => b || t[0]?.tag || "");
     });
@@ -104,7 +104,7 @@ export function ReleasePanel() {
 
   useEffect(() => {
     if (!effective || edited) return;
-    const t = setTimeout(() => void releaseApi.template(effective).then(setNotes), 200);
+    const t = setTimeout(() => void releaseApi.template(project, effective).then(setNotes), 200);
     return () => clearTimeout(t);
   }, [effective, edited]);
 
@@ -114,7 +114,7 @@ export function ReleasePanel() {
     setResult(null);
     setDraftInfo(null);
     try {
-      const r = await releaseApi.facts(baseTag || null, prerelease);
+      const r = await releaseApi.facts(project, baseTag || null, prerelease);
       setFacts(r.facts);
       setExcluded(new Set(r.facts.prs.filter((p) => p.versionBump).map((p) => p.number)));
       setNotes(r.templates);
@@ -132,7 +132,7 @@ export function ReleasePanel() {
     setDrafting(true);
     setDraftError(null);
     try {
-      const r = await releaseApi.draft(effective);
+      const r = await releaseApi.draft(project, effective);
       setNotes({ slack: r.slack, github: r.github });
       setDraftInfo({ warnings: r.warnings, costUsd: r.costUsd });
       setEdited(true);
@@ -149,7 +149,7 @@ export function ReleasePanel() {
     setPublishError(null);
     log.clear();
     try {
-      const r = await releaseApi.publish(effective, notes.github, prerelease, updateJira && !!settings?.jira, dryRun);
+      const r = await releaseApi.publish(project, effective, notes.github, prerelease, updateJira && !!settings?.jira, dryRun);
       if (!dryRun) setResult(r);
     } catch (e) {
       setPublishError((e as Error).message);

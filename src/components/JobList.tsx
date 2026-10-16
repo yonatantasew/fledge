@@ -44,10 +44,12 @@ export function JobList({
   jobs,
   selected,
   onSelect,
+  showProject = false,
 }: {
   jobs: Job[];
   selected: string | null;
   onSelect: (id: string) => void;
+  showProject?: boolean;
 }) {
   const flavorLabel = useFlavorLabel();
   const active = jobs.some((j) => j.status === "running");
@@ -189,6 +191,7 @@ export function JobList({
                       )}
                     </div>
                     <div className="truncate font-mono text-[11px] text-muted-foreground">
+                      {showProject && j.projectName ? `${j.projectName} · ` : ""}
                       {j.branch} @ {j.sha} · {shortPath(j.checkout)}
                     </div>
                   </div>

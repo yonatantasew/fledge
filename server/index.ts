@@ -22,8 +22,21 @@ import { cancelLogin, firebaseStatus, onFirebaseChange, startLogin } from "./fir
 import { templateGithub, templateSlack, type ReleaseFacts } from "./notes.ts";
 import { connections, draftWithClaude, gatherFacts, publish, releases, validatePublish } from "./release.ts";
 import { startable } from "./scheduler.ts";
-import { CONFIG, CONFIG_FILE, REPO_ROOT } from "./repo.ts";
-import { flavorOf } from "./config.ts";
+import { flavorOf, type FledgeConfig } from "./config.ts";
+import { detectProject } from "./detect.ts";
+import {
+  addProject,
+  findCandidates,
+  flutterRepoRoot,
+  getProject,
+  listEntries,
+  listProjects,
+  localConfigPath,
+  removeProject,
+  saveLocalConfig,
+  type Project,
+} from "./projects.ts";
+import { startupProject } from "./repo.ts";
 import { install, installBlocker, listDevices, NeedsReplace } from "./devices.ts";
 
 const run = promisify(execFile);
@@ -48,8 +61,8 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
   return (await run("git", ["-C", cwd, ...args], { maxBuffer: 8 << 20 })).stdout.trim();
 }
 
-async function worktreePaths(): Promise<string[]> {
-  const out = await git(REPO_ROOT, "worktree", "list", "--porcelain");
+async function worktreePaths(root: string): Promise<string[]> {
+  const out = await git(root, "worktree", "list", "--porcelain").catch(() => "");
   return out
     .split("\n")
     .filter((l) => l.startsWith("worktree "))
@@ -73,14 +86,22 @@ async function describe(p: string): Promise<Checkout> {
   };
 }
 
-async function checkouts(): Promise<Checkout[]> {
-  return Promise.all((await worktreePaths()).map(describe));
+async function checkouts(project: Project): Promise<Checkout[]> {
+  return Promise.all((await worktreePaths(project.root)).map(describe));
 }
 
-/** Only paths git lists as worktrees of this repo may be built. */
-async function resolveCheckout(p: unknown): Promise<string | null> {
+/** Only paths git lists as worktrees of the app's repository may be built. */
+async function resolveCheckout(project: Project, p: unknown): Promise<string | null> {
   if (typeof p !== "string") return null;
-  return (await worktreePaths()).includes(p) ? p : null;
+  return (await worktreePaths(project.root)).includes(p) ? p : null;
+}
+
+/** A registered app whose config loaded, or an error to send back. */
+async function usableProject(id: unknown): Promise<{ project: Project & { config: FledgeConfig } } | { error: string }> {
+  const project = await getProject(id);
+  if (!project) return { error: "unknown app" };
+  if (!project.config) return { error: project.error ?? `${project.name} has no fledge config yet` };
+  return { project: project as Project & { config: FledgeConfig } };
 }
 
 const FLUTTER_CMD = await run("which", ["fvm"]).then(
@@ -104,6 +125,8 @@ type Status = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 interface Job {
   id: string;
+  project: string; // registered app id
+  projectName: string;
   checkout: string;
   branch: string;
   sha: string;
@@ -127,8 +150,8 @@ interface Job {
 }
 
 // Fallback when the artifact's bundle id could not be read back (aapt2 missing).
-const bundleIdOf = (job: Job) => {
-  const f = flavorOf(CONFIG, job.flavor);
+const bundleIdOf = (job: Job, config: FledgeConfig | null) => {
+  const f = config ? flavorOf(config, job.flavor) : undefined;
   return job.platform === "ios" ? f?.iosId : f?.androidId;
 };
 const exportMethodOf = (job: Job) => /--export-method=(\S+)/.exec(job.command)?.[1];
@@ -348,7 +371,7 @@ async function prepareXcode(job: Job) {
   const xcconfig = await readFile(path.join(job.checkout, "ios/Flutter/Generated.xcconfig"), "utf8");
   const read = (k: string) => new RegExp(`^${k}=(.*)$`, "m").exec(xcconfig)?.[1] ?? "";
   job.verified = { version: `${read("FLUTTER_BUILD_NAME")}+${read("FLUTTER_BUILD_NUMBER")}` };
-  const key = CONFIG.flavorDefine;
+  const key = (await getProject(job.project))?.config?.flavorDefine ?? null;
   if (key) {
     const flavor = read("DART_DEFINES")
       .split(",")
@@ -373,7 +396,8 @@ async function prepareXcode(job: Job) {
 
   const workspace = path.join(job.checkout, "ios/Runner.xcworkspace");
   await run("open", ["-a", "Xcode", workspace]);
-  const scheme = flavorOf(CONFIG, job.flavor)?.xcodeScheme ?? job.flavor;
+  const projectConfig = (await getProject(job.project))?.config;
+  const scheme = (projectConfig && flavorOf(projectConfig, job.flavor)?.xcodeScheme) ?? job.flavor;
   // Best effort: wait for the workspace to load, then pick the flavor's scheme.
   const picked = await osascript(`tell application "Xcode"
     repeat 60 times
@@ -430,35 +454,41 @@ async function findAapt2(): Promise<string | null> {
 
 /** Past builds survive a restart: each archive folder carries its job.json. */
 async function loadHistory() {
-  for (const p of await worktreePaths()) {
-    const dir = path.join(p, ARCHIVE);
-    for (const name of await readdir(dir).catch(() => [] as string[])) {
-      const raw = await readFile(path.join(dir, name, "job.json"), "utf8").catch(() => null);
-      if (!raw) continue;
-      const job = JSON.parse(raw) as Job;
-      if (job.install?.state === "installing") job.install = { ...job.install, state: "failed", message: "interrupted by a restart" };
-      if (!jobs.some((j) => j.id === job.id)) jobs.push(job);
-      const l = await readFile(path.join(dir, name, "build.log"), "utf8").catch(() => "");
-      logs.set(job.id, l);
+  for (const project of await listProjects()) {
+    for (const p of await worktreePaths(project.root)) {
+      const dir = path.join(p, ARCHIVE);
+      for (const name of await readdir(dir).catch(() => [] as string[])) {
+        const raw = await readFile(path.join(dir, name, "job.json"), "utf8").catch(() => null);
+        if (!raw) continue;
+        const job = JSON.parse(raw) as Job;
+        job.project ??= project.id; // builds from before fledge managed several apps
+        job.projectName ??= project.name;
+        if (job.install?.state === "installing") job.install = { ...job.install, state: "failed", message: "interrupted by a restart" };
+        if (!jobs.some((j) => j.id === job.id)) jobs.push(job);
+        logs.set(job.id, await readFile(path.join(dir, name, "build.log"), "utf8").catch(() => ""));
+      }
     }
   }
   jobs.sort((a, b) => a.createdAt - b.createdAt);
 }
 
 async function plan(body: unknown) {
-  const parsed = parseRequest(body, CONFIG);
+  const u = await usableProject((body as Record<string, unknown> | null)?.project);
+  if ("error" in u) return u;
+  const { project } = u;
+  const parsed = parseRequest(body, project.config);
   if ("error" in parsed) return { error: parsed.error };
-  const checkout = await resolveCheckout((body as Record<string, unknown>).checkout);
-  if (!checkout) return { error: "checkout is not a worktree of this repository" };
+  const checkout = await resolveCheckout(project, (body as Record<string, unknown>).checkout);
+  if (!checkout) return { error: `checkout is not a worktree of ${project.name}` };
   const info = await describe(checkout);
   const builds: PlannedBuild[] = [];
   const skipped: SkippedBuild[] = [];
   for (const t of parsed.targets) {
-    const r = planBuild(t, parsed.options, info.sha, CONFIG);
+    const r = planBuild(t, parsed.options, info.sha, project.config);
     if ("build" in r) builds.push(r.build);
     else skipped.push(r.skipped);
   }
-  return { checkout: info, builds, skipped };
+  return { project: { id: project.id, name: project.name }, checkout: info, builds, skipped };
 }
 
 // --------------------------------------------------------------------- http
@@ -489,17 +519,88 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
   if (req.method === "GET" && url.pathname === "/api/devices") return send(res, 200, await listDevices());
 
   if (req.method === "GET" && url.pathname === "/api/info") {
-    const list = await checkouts();
-    const main = list[0]?.path;
+    const project = await getProject(url.searchParams.get("project"));
+    if (!project) return send(res, 404, { error: "unknown app" });
+    const list = await checkouts(project);
     return send(res, 200, {
+      project: { id: project.id, name: project.name, root: project.root },
       checkouts: list,
-      flutter: await getFlutterVersion(main),
+      flutter: await getFlutterVersion(list[0]?.path ?? project.root),
       cli: FLUTTER_CMD,
-      config: CONFIG_FILE,
-      flavors: CONFIG.flavors.map(({ name, label, confirm }) => ({ name, label, confirm })),
-      toggles: CONFIG.toggles.map(({ id, label, hint, skipFlavors }) => ({ id, label, hint, skipFlavors })),
-      releases: CONFIG.release !== null,
+      config: project.configFile,
+      configSource: project.source,
+      configError: project.error ?? null,
+      flavors: project.config?.flavors.map(({ name, label, confirm }) => ({ name, label, confirm })) ?? [],
+      toggles: project.config?.toggles.map(({ id, label, hint, skipFlavors }) => ({ id, label, hint, skipFlavors })) ?? [],
+      releases: !!project.config?.release,
     });
+  }
+
+  // ------------------------------------------------------------- apps
+
+  if (req.method === "GET" && url.pathname === "/api/projects") {
+    return send(
+      res,
+      200,
+      (await listProjects()).map((p) => ({
+        id: p.id,
+        name: p.name,
+        root: p.root,
+        source: p.source,
+        configFile: p.configFile,
+        error: p.error ?? null,
+        ready: !!p.config,
+      })),
+    );
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/projects/candidates") {
+    return send(res, 200, await findCandidates((await listEntries()).map((e) => e.path)));
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/projects/detect") {
+    const b = (await readJson(req)) as { path?: unknown };
+    const root = typeof b.path === "string" && path.isAbsolute(b.path) ? await flutterRepoRoot(b.path) : null;
+    if (!root) return send(res, 400, { error: "not a Flutter project's git repository (give its full path)" });
+    return send(res, 200, { root, ...(await detectProject(root)) });
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/projects") {
+    const b = (await readJson(req)) as { path?: unknown; name?: unknown; config?: unknown };
+    if (typeof b.path !== "string" || !path.isAbsolute(b.path)) return send(res, 400, { error: "path must be a full path" });
+    const name = typeof b.name === "string" && b.name.trim() ? b.name.trim().slice(0, 60) : undefined;
+    try {
+      const entry = await addProject(b.path, { name });
+      if (b.config !== undefined) await saveLocalConfig(entry.id, b.config);
+      return send(res, 200, entry);
+    } catch (e) {
+      return send(res, 400, { error: (e as Error).message });
+    }
+  }
+
+  const projectRoute = /^\/api\/projects\/([a-z0-9-]+)(\/config)?$/.exec(url.pathname);
+  if (projectRoute) {
+    const project = await getProject(projectRoute[1]);
+    if (!project) return send(res, 404, { error: "unknown app" });
+    if (req.method === "DELETE" && !projectRoute[2]) {
+      if (jobs.some((j) => j.project === project.id && (j.status === "queued" || j.status === "running"))) {
+        return send(res, 409, { error: "stop this app's builds first" });
+      }
+      await removeProject(project.id);
+      return send(res, 200, { ok: true });
+    }
+    if (req.method === "GET" && projectRoute[2]) {
+      const text = project.source ? await readFile(project.configFile!, "utf8").catch(() => "") : "";
+      return send(res, 200, { source: project.source, file: project.configFile, local: localConfigPath(project.id), text, error: project.error ?? null });
+    }
+    if (req.method === "PUT" && projectRoute[2]) {
+      const b = (await readJson(req)) as { config?: unknown };
+      try {
+        return send(res, 200, { file: await saveLocalConfig(project.id, b.config) });
+      } catch (e) {
+        return send(res, 400, { error: (e as Error).message });
+      }
+    }
   }
 
   if (req.method === "GET" && url.pathname === "/api/events") {
@@ -523,55 +624,62 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
     return send(res, 200, { ok: true });
   }
 
-  if (req.method === "GET" && url.pathname === "/api/release/config") {
-    const r = CONFIG.release;
-    return send(res, 200, r && {
-      baseBranch: r.github.baseBranch,
-      branch: r.versionBump.branch,
-      prTitle: r.versionBump.prTitle,
-      jira: r.jira ? { fromStatus: r.jira.fromStatus, toStatus: r.jira.toStatus } : null,
-    });
-  }
+  if (url.pathname.startsWith("/api/release/")) {
+    const body = req.method === "POST" ? ((await readJson(req)) as Record<string, unknown>) : {};
+    const project = await getProject(req.method === "POST" ? body.project : url.searchParams.get("project"));
+    if (!project) return send(res, 404, { error: "unknown app" });
 
-  if (req.method === "GET" && url.pathname === "/api/release/connections") return send(res, 200, await connections());
-  if (req.method === "GET" && url.pathname === "/api/release/tags") return send(res, 200, await releases());
-
-  if (req.method === "POST" && url.pathname === "/api/release/facts") {
-    const b = (await readJson(req)) as { baseTag?: unknown; prerelease?: unknown };
-    const baseTag = typeof b.baseTag === "string" && /^v[\w.+-]+$/.test(b.baseTag) ? b.baseTag : null;
-    const facts = await gatherFacts(baseTag, b.prerelease !== false);
-    return send(res, 200, { facts, templates: { slack: templateSlack(facts), github: templateGithub(facts) } });
-  }
-
-  // Re-renders the template after the UI edits the facts (excluded PRs, version, date).
-  if (req.method === "POST" && url.pathname === "/api/release/template") {
-    const { facts } = (await readJson(req)) as { facts: ReleaseFacts };
-    return send(res, 200, { slack: templateSlack(facts), github: templateGithub(facts) });
-  }
-
-  if (req.method === "POST" && url.pathname === "/api/release/draft") {
-    const { facts } = (await readJson(req)) as { facts: ReleaseFacts };
-    try {
-      return send(res, 200, await draftWithClaude(facts, { slack: templateSlack(facts), github: templateGithub(facts) }));
-    } catch (e) {
-      return send(res, 502, { error: `Claude: ${(e as Error).message}` });
+    if (req.method === "GET" && url.pathname === "/api/release/config") {
+      const r = project.config?.release;
+      return send(res, 200, r ? {
+        baseBranch: r.github.baseBranch,
+        branch: r.versionBump.branch,
+        prTitle: r.versionBump.prTitle,
+        jira: r.jira ? { fromStatus: r.jira.fromStatus, toStatus: r.jira.toStatus } : null,
+      } : null);
     }
-  }
-
-  if (req.method === "POST" && url.pathname === "/api/release/publish") {
-    if (publishing) return send(res, 409, { error: "a release is already being published" });
-    const p = validatePublish(await readJson(req));
-    if ("error" in p) return send(res, 400, p);
-    publishing = true;
-    const say = (line: string) => broadcast("release", { line });
-    try {
-      return send(res, 200, await publish(p, say));
-    } catch (e) {
-      say(`Failed: ${(e as Error).message}`);
-      return send(res, 500, { error: (e as Error).message });
-    } finally {
-      publishing = false;
+    if (req.method === "GET" && url.pathname === "/api/release/connections") return send(res, 200, await connections(project));
+    if (req.method === "GET" && url.pathname === "/api/release/tags") {
+      return send(res, 200, project.config?.release ? await releases(project) : []);
     }
+
+    if (req.method === "POST" && url.pathname === "/api/release/facts") {
+      const baseTag = typeof body.baseTag === "string" && /^v[\w.+-]+$/.test(body.baseTag) ? body.baseTag : null;
+      const facts = await gatherFacts(project, baseTag, body.prerelease !== false);
+      return send(res, 200, { facts, templates: { slack: templateSlack(facts), github: templateGithub(facts) } });
+    }
+
+    // Re-renders the template after the UI edits the facts (excluded PRs, version, date).
+    if (req.method === "POST" && url.pathname === "/api/release/template") {
+      const facts = body.facts as ReleaseFacts;
+      return send(res, 200, { slack: templateSlack(facts), github: templateGithub(facts) });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/release/draft") {
+      const facts = body.facts as ReleaseFacts;
+      try {
+        return send(res, 200, await draftWithClaude(project, facts, { slack: templateSlack(facts), github: templateGithub(facts) }));
+      } catch (e) {
+        return send(res, 502, { error: `Claude: ${(e as Error).message}` });
+      }
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/release/publish") {
+      if (publishing) return send(res, 409, { error: "a release is already being published" });
+      const p = validatePublish(body);
+      if ("error" in p) return send(res, 400, p);
+      publishing = true;
+      const say = (line: string) => broadcast("release", { project: project.id, line });
+      try {
+        return send(res, 200, await publish(project, p, say));
+      } catch (e) {
+        say(`Failed: ${(e as Error).message}`);
+        return send(res, 500, { error: (e as Error).message });
+      } finally {
+        publishing = false;
+      }
+    }
+    return send(res, 404, { error: "not found" });
   }
 
   if (req.method === "POST" && url.pathname === "/api/plan") return send(res, 200, await plan(await readJson(req)));
@@ -582,6 +690,8 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
     for (const b of p.builds) {
       const job: Job = {
         id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+        project: p.project.id,
+        projectName: p.project.name,
         checkout: p.checkout.path,
         branch: p.checkout.branch,
         sha: p.checkout.sha,
@@ -652,7 +762,7 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
       mode: job.mode,
       artifact: job.artifact,
       file: job.artifactFile,
-      bundleId: job.verified?.bundleId ?? bundleIdOf(job) ?? "",
+      bundleId: job.verified?.bundleId ?? bundleIdOf(job, (await getProject(job.project))?.config ?? null) ?? "",
       exportMethod: exportMethodOf(job),
       arm64Only: job.command.includes("--target-platform android-arm64"),
     };
@@ -716,6 +826,7 @@ const vite = DEV
     })
   : null;
 
+const first = await startupProject();
 await loadHistory();
 
 http
@@ -731,7 +842,8 @@ http
     }
   })
   .listen(PORT, HOST, () => {
-    console.log(`fledge → http://localhost:${PORT}  (${REPO_ROOT})${DEV ? "  [dev]" : ""}`);
+    const at = first ? `/?project=${first.id}  (${first.name}: ${first.path})` : "  (no app here — add one in the UI)";
+    console.log(`fledge → http://localhost:${PORT}${at}${DEV ? "  [dev]" : ""}`);
   });
 
 process.on("SIGINT", () => {

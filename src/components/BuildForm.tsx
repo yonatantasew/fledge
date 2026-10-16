@@ -25,7 +25,6 @@ import { useFlavorLabel, useProject } from "@/project";
 const MODE_LABEL: Record<Mode, string> = { debug: "Debug", profile: "Profile", release: "Release" };
 export const PLATFORM_ICON: Record<Platform, IconSvgElement> = { android: AndroidIcon, ios: AppleIcon };
 
-const STORAGE_KEY = "fledge:form";
 
 interface FormState {
   platforms: Platform[];
@@ -51,9 +50,12 @@ const DEFAULTS: FormState = {
   },
 };
 
-function loadForm(): FormState {
+// Remembered per app: each one has its own flavors and switches.
+const storageKey = (project: string) => `fledge:form:${project}`;
+
+function loadForm(project: string): FormState {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(storageKey(project));
     if (raw) {
       const saved = JSON.parse(raw) as Partial<FormState>;
       // Version overrides are per-release; never carry them over silently.
@@ -110,8 +112,8 @@ function OptionRow({
   );
 }
 
-export function BuildForm({ checkout }: { checkout: Checkout | undefined }) {
-  const [form, setForm] = useState<FormState>(loadForm);
+export function BuildForm({ projectId, checkout }: { projectId: string; checkout: Checkout | undefined }) {
+  const [form, setForm] = useState<FormState>(() => loadForm(projectId));
   const [plan, setPlan] = useState<PlanResult | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -133,9 +135,9 @@ export function BuildForm({ checkout }: { checkout: Checkout | undefined }) {
 
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(form));
+      localStorage.setItem(storageKey(projectId), JSON.stringify(form));
     } catch {}
-  }, [form]);
+  }, [form, projectId]);
 
   const targets = useMemo(
     () => platforms.flatMap((platform) => flavors.flatMap((flavor) => modes.map((mode) => ({ platform, flavor, mode })))),
@@ -143,9 +145,9 @@ export function BuildForm({ checkout }: { checkout: Checkout | undefined }) {
   );
 
   const request = useMemo(
-    () => (checkout && targets.length ? { checkout: checkout.path, targets, options: { ...options, toggles: toggleIds } } : null),
+    () => (checkout && targets.length ? { project: projectId, checkout: checkout.path, targets, options: { ...options, toggles: toggleIds } } : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [checkout, targets, options, toggleIds.join(",")],
+    [projectId, checkout, targets, options, toggleIds.join(",")],
   );
 
   useEffect(() => {

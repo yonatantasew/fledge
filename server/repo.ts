@@ -1,14 +1,11 @@
-// Which Flutter project fledge works on: `--repo <path>`, else $FLEDGE_REPO,
-// else the git repository containing the directory fledge was started from.
-// Fledge itself lives outside the app, so it never assumes its own location.
+// Which app fledge opens first: `--repo <path>`, else $FLEDGE_REPO, else the
+// folder it was started in, registered on the way if it's a new Flutter repo.
+// `--config <file>` (or $FLEDGE_CONFIG) becomes that app's explicit config.
+// Started outside any Flutter repo, fledge still runs and shows the app list.
 
-import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
-import { loadConfig } from "./config.ts";
-
-const run = promisify(execFile);
+import { addProject, flutterRepoRoot, type ProjectEntry } from "./projects.ts";
 
 function argValue(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
@@ -16,23 +13,21 @@ function argValue(flag: string): string | undefined {
   return process.argv.find((a) => a.startsWith(`${flag}=`))?.slice(flag.length + 1);
 }
 
-async function resolveRepo(): Promise<string> {
-  const start = path.resolve(argValue("--repo") ?? process.env.FLEDGE_REPO ?? process.cwd());
-  const root = await run("git", ["-C", start, "rev-parse", "--show-toplevel"]).then(
-    (r) => r.stdout.trim(),
-    () => null,
-  );
-  if (!root || !existsSync(path.join(root, "pubspec.yaml"))) {
-    console.error(
-      `fledge: ${start} is not inside a Flutter project's git repository.\n` +
-        "Run it from your app's folder, or pass --repo /path/to/app (or set FLEDGE_REPO).",
-    );
+export async function startupProject(): Promise<ProjectEntry | null> {
+  const repo = argValue("--repo") ?? process.env.FLEDGE_REPO;
+  const config = argValue("--config") ?? process.env.FLEDGE_CONFIG;
+  const dir = path.resolve(repo ?? process.cwd());
+  const root = await flutterRepoRoot(dir);
+  if (!root) {
+    if (repo || config) {
+      console.error(`fledge: ${dir} is not inside a Flutter project's git repository.`);
+      process.exit(1);
+    }
+    return null;
+  }
+  if (config && !existsSync(path.resolve(config))) {
+    console.error(`fledge: no config file at ${path.resolve(config)}.`);
     process.exit(1);
   }
-  return root;
+  return addProject(root, { config });
 }
-
-export const REPO_ROOT = await resolveRepo();
-
-// The app's fledge.json (see config.ts), loaded once at startup.
-export const { config: CONFIG, file: CONFIG_FILE } = loadConfig(REPO_ROOT);

@@ -25,35 +25,37 @@ import {
   type Ticket,
 } from "./notes.ts";
 import { fill, type ReleaseConfig } from "./config.ts";
-import { CONFIG, CONFIG_FILE, REPO_ROOT } from "./repo.ts";
+import type { Project } from "./projects.ts";
 
 const run = promisify(execFile);
-/** The release section of fledge.json; release actions stop with a clear message without it. */
-function rel(): ReleaseConfig {
-  if (!CONFIG.release) throw new Error(`${CONFIG_FILE} has no "release" section, so releases aren't set up for this app`);
-  return CONFIG.release;
+/** The app's release settings; release actions stop with a clear message without them. */
+function rel(p: Project): ReleaseConfig {
+  if (!p.config) throw new Error(p.error ?? `${p.name} has no fledge config yet`);
+  if (!p.config.release) throw new Error(`${p.configFile} has no "release" section, so releases aren't set up for ${p.name}`);
+  return p.config.release;
 }
 
-function jira(): NonNullable<ReleaseConfig["jira"]> {
-  const j = rel().jira;
-  if (!j) throw new Error(`${CONFIG_FILE} has no "release.jira" section`);
+function jira(p: Project): NonNullable<ReleaseConfig["jira"]> {
+  const j = rel(p).jira;
+  if (!j) throw new Error(`${p.configFile} has no "release.jira" section`);
   return j;
 }
 
-async function git(...args: string[]) {
-  return (await run("git", ["-C", REPO_ROOT, ...args], { maxBuffer: 32 << 20 })).stdout.trim();
+async function git(p: Project, ...args: string[]) {
+  return (await run("git", ["-C", p.root, ...args], { maxBuffer: 32 << 20 })).stdout.trim();
 }
 
-let ghToken: Promise<string | undefined> | null = null;
-async function gh(args: string[], cwd = REPO_ROOT) {
+const ghTokens = new Map<string, Promise<string>>();
+async function gh(p: Project, args: string[], cwd = p.root) {
   // With several gh accounts logged in, the active one may not have access to
   // the app's repo; release.github.account picks the one that does.
-  const account = rel().github.account;
-  ghToken ??= account
-    ? run("gh", ["auth", "token", "--user", account]).then((r) => r.stdout.trim())
-    : Promise.resolve(undefined);
-  const token = await ghToken;
-  const env = { ...process.env, GH_REPO: rel().github.repo, ...(token ? { GH_TOKEN: token } : {}) };
+  const account = rel(p).github.account;
+  let token: string | undefined;
+  if (account) {
+    if (!ghTokens.has(account)) ghTokens.set(account, run("gh", ["auth", "token", "--user", account]).then((r) => r.stdout.trim()));
+    token = await ghTokens.get(account);
+  }
+  const env = { ...process.env, GH_REPO: rel(p).github.repo, ...(token ? { GH_TOKEN: token } : {}) };
   return (await run("gh", args, { cwd, env, maxBuffer: 32 << 20 })).stdout.trim();
 }
 
@@ -79,9 +81,9 @@ export interface ReleaseRef {
   createdAt: string;
 }
 
-export async function releases(): Promise<ReleaseRef[]> {
+export async function releases(p: Project): Promise<ReleaseRef[]> {
   const list = JSON.parse(
-    await gh(["release", "list", "--limit", "20", "--json", "tagName,isPrerelease,isDraft,createdAt"]),
+    await gh(p, ["release", "list", "--limit", "20", "--json", "tagName,isPrerelease,isDraft,createdAt"]),
   ) as { tagName: string; isPrerelease: boolean; isDraft: boolean; createdAt: string }[];
   return list.filter((r) => !r.isDraft).map((r) => ({ tag: r.tagName, prerelease: r.isPrerelease, createdAt: r.createdAt }));
 }
@@ -92,13 +94,13 @@ export interface StatusReport {
   claude: { ok: boolean; version?: string; error?: string };
 }
 
-export async function connections(): Promise<StatusReport> {
+export async function connections(p: Project): Promise<StatusReport> {
   const [github, jira, claude] = await Promise.all([
-    (CONFIG.release ? gh(["api", "user", "-q", ".login"]) : Promise.reject(new Error("releases aren't set up (no release section in fledge.json)"))).then(
+    (p.config?.release ? gh(p, ["api", "user", "-q", ".login"]) : Promise.reject(new Error("releases aren't set up (no release section in fledge.json)"))).then(
       (login) => ({ ok: true, login }),
       (e: Error) => ({ ok: false, error: e.message.split("\n")[0] }),
     ),
-    !CONFIG.release?.jira
+    !p.config?.release?.jira
       ? Promise.resolve({ ok: false, error: "not set up for this app (release.jira in fledge.json)" })
       : run("acli", ["jira", "auth", "status"]).then(
       (r) => {
@@ -143,77 +145,77 @@ async function jiraTickets(keys: string[]): Promise<Record<string, Ticket>> {
  * bump commit, whose parent is the main commit that was built, so the range
  * starts right after the last build.
  */
-export async function gatherFacts(baseTag: string | null, prerelease: boolean): Promise<ReleaseFacts> {
-  await git("fetch", "--quiet", "--tags", "origin", rel().github.baseBranch);
-  const headRef = `origin/${rel().github.baseBranch}`;
-  const headSha = await git("rev-parse", headRef);
+export async function gatherFacts(p: Project, baseTag: string | null, prerelease: boolean): Promise<ReleaseFacts> {
+  await git(p, "fetch", "--quiet", "--tags", "origin", rel(p).github.baseBranch);
+  const headRef = `origin/${rel(p).github.baseBranch}`;
+  const headSha = await git(p, "rev-parse", headRef);
 
   let previous: ReleaseFacts["previous"] = null;
   if (baseTag) {
-    const sha = await git("rev-parse", `${baseTag}^{commit}`);
-    const date = await git("log", "-1", "--format=%cI", sha);
-    const base = await git("merge-base", sha, headSha);
+    const sha = await git(p, "rev-parse", `${baseTag}^{commit}`);
+    const date = await git(p, "log", "-1", "--format=%cI", sha);
+    const base = await git(p, "merge-base", sha, headSha);
     previous = { tag: baseTag, sha, base, version: baseTag.replace(/^v/, ""), date: formatDate(new Date(date)) };
   }
 
-  const log = await git("log", "--first-parent", "--format=%H%x09%s", previous ? `${previous.sha}..${headSha}` : `-50`, ...(previous ? [] : [headSha]));
+  const log = await git(p, "log", "--first-parent", "--format=%H%x09%s", previous ? `${previous.sha}..${headSha}` : `-50`, ...(previous ? [] : [headSha]));
   const merges = parseMerges(log);
 
   const prs = await pool(merges, 6, async (m): Promise<MergedPr> => {
     const d = JSON.parse(
-      await gh(["pr", "view", String(m.number), "--json", "number,title,author,headRefName,url,additions,deletions,changedFiles"]),
+      await gh(p, ["pr", "view", String(m.number), "--json", "number,title,author,headRefName,url,additions,deletions,changedFiles"]),
     ) as { number: number; title: string; author: { login: string }; headRefName: string; url: string; additions: number; deletions: number; changedFiles: number };
     const branch = m.branch ?? d.headRefName;
     return {
       number: d.number,
       title: d.title,
       author: d.author.login,
-      dri: rel().team[d.author.login] ?? d.author.login,
+      dri: rel(p).team[d.author.login] ?? d.author.login,
       branch,
       mergeSha: m.sha,
       url: d.url,
       additions: d.additions,
       deletions: d.deletions,
       changedFiles: d.changedFiles,
-      tickets: rel().tickets ? ticketKeys(rel().tickets!.project, d.title, branch) : [],
-      versionBump: isBump(branch, d.title),
+      tickets: rel(p).tickets ? ticketKeys(rel(p).tickets!.project, d.title, branch) : [],
+      versionBump: isBump(p, branch, d.title),
       stackedOn: [],
     };
   });
 
   // Stacked PRs: B's branch contained A's branch at merge time, and A was not
   // already on main when B was merged. Only real merge commits have a ^2.
-  const heads = await Promise.all(prs.map((p) => git("rev-parse", "--verify", "-q", `${p.mergeSha}^2`).catch(() => "")));
+  const heads = await Promise.all(prs.map((pr) => git(p, "rev-parse", "--verify", "-q", `${pr.mergeSha}^2`).catch(() => "")));
   for (let b = 0; b < prs.length; b++) {
     for (let a = 0; a < prs.length; a++) {
       if (a === b || !heads[a] || !heads[b] || prs[a].versionBump) continue;
-      const inB = await run("git", ["-C", REPO_ROOT, "merge-base", "--is-ancestor", heads[a], heads[b]]).then(() => true, () => false);
+      const inB = await run("git", ["-C", p.root, "merge-base", "--is-ancestor", heads[a], heads[b]]).then(() => true, () => false);
       if (!inB) continue;
-      const onMain = await run("git", ["-C", REPO_ROOT, "merge-base", "--is-ancestor", heads[a], `${prs[b].mergeSha}^1`]).then(() => true, () => false);
+      const onMain = await run("git", ["-C", p.root, "merge-base", "--is-ancestor", heads[a], `${prs[b].mergeSha}^1`]).then(() => true, () => false);
       if (!onMain) prs[b].stackedOn.push(prs[a].number);
     }
   }
 
-  const keys = [...new Set(prs.flatMap((p) => p.tickets))];
-  const pubspec = /^version:\s*(\S+)/m.exec(await git("show", `${headSha}:pubspec.yaml`))?.[1] ?? "";
+  const keys = [...new Set(prs.flatMap((pr) => pr.tickets))];
+  const pubspec = /^version:\s*(\S+)/m.exec(await git(p, "show", `${headSha}:pubspec.yaml`))?.[1] ?? "";
 
   return {
-    repo: rel().github.repo,
-    channel: rel().channel,
+    repo: rel(p).github.repo,
+    channel: rel(p).channel,
     previous,
-    head: { ref: rel().github.baseBranch, sha: headSha },
+    head: { ref: rel(p).github.baseBranch, sha: headSha },
     version: nextVersion(baseTag, pubspec),
     date: formatDate(new Date()),
     prerelease,
     prs,
     tickets: await jiraTickets(keys).catch(() => ({})),
-    jiraSite: (rel().jira?.site ?? ""),
+    jiraSite: (rel(p).jira?.site ?? ""),
   };
 }
 
 /** An earlier version-bump PR, recognised by the configured branch or title template. */
-function isBump(branch: string, title: string) {
-  const b = rel().versionBump;
+function isBump(p: Project, branch: string, title: string) {
+  const b = rel(p).versionBump;
   return templateRegex(b.branch).test(branch) || templateRegex(b.prTitle).test(title);
 }
 
@@ -230,7 +232,7 @@ const NOTES_SCHEMA = {
   additionalProperties: false,
 };
 
-const style = () => `You write the release notes for a Flutter app's test builds. Work only from the JSON facts given; never invent tickets, PRs, people, SHAs or versions.
+const style = (p: Project) => `You write the release notes for a Flutter app's test builds. Work only from the JSON facts given; never invent tickets, PRs, people, SHAs or versions.
 
 Produce two texts, each a rewrite of the TEMPLATE drafts that follow, keeping their exact structure:
 1. "slack": the channel note. Header line, a blank line, then one numbered item per PR (version-bump PRs are excluded):
@@ -250,12 +252,12 @@ Context that is correct by design, so never warn about it:
 - The version-bump commit does not exist yet. Publishing creates it on top of head.sha, and the release is tagged on that commit, so the PR list never contains it.
 - previous.base is where the previous build left the base branch (its tag sits on a bump commit off main), so the commit range starting at previous.base is intended.
 
-warnings (short, specific): PRs with no ticket; a DRI that looks like a GitHub login rather than a name; ${rel().jira ? `tickets whose Jira status is not "${rel().jira!.fromStatus}" (they will not be moved automatically), naming the status; ` : ""} anything in the facts that contradicts itself. Empty array if nothing.`;
+warnings (short, specific): PRs with no ticket; a DRI that looks like a GitHub login rather than a name; ${rel(p).jira ? `tickets whose Jira status is not "${rel(p).jira!.fromStatus}" (they will not be moved automatically), naming the status; ` : ""} anything in the facts that contradicts itself. Empty array if nothing.`;
 
-export async function draftWithClaude(facts: ReleaseFacts, templates: { slack: string; github: string }) {
+export async function draftWithClaude(p: Project, facts: ReleaseFacts, templates: { slack: string; github: string }) {
   const dir = await mkdtemp(path.join(tmpdir(), "fledge-claude-"));
   try {
-    const prompt = `${style()}\n\nFACTS:\n${JSON.stringify(facts, null, 2)}\n\nTEMPLATE slack:\n${templates.slack}\n\nTEMPLATE github:\n${templates.github}\n`;
+    const prompt = `${style(p)}\n\nFACTS:\n${JSON.stringify(facts, null, 2)}\n\nTEMPLATE slack:\n${templates.slack}\n\nTEMPLATE github:\n${templates.github}\n`;
     const child = run(
       "claude",
       [
@@ -317,26 +319,26 @@ export interface PublishResult {
  * Cuts the release. Order matters: everything that can fail without leaving a
  * trace (tag exists, branch exists, sha moved) is checked before the first push.
  */
-export async function publish(req: PublishRequest, log: (line: string) => void): Promise<PublishResult> {
+export async function publish(p: Project, req: PublishRequest, log: (line: string) => void): Promise<PublishResult> {
   const { facts } = req;
   const tag = `v${facts.version}`;
-  const bump = rel().versionBump;
+  const bump = rel(p).versionBump;
   const branch = fill(bump.branch, bumpValues(facts));
-  await git("check-ref-format", "--branch", branch).catch(() => {
+  await git(p, "check-ref-format", "--branch", branch).catch(() => {
     throw new Error(`release.versionBump.branch gives "${branch}", which isn't a valid branch name`);
   });
   const result: PublishResult = { tag, branch, bumpSha: "", jira: [] };
 
   log(`Checking that ${tag} and ${branch} are free…`);
-  await git("fetch", "--quiet", "--tags", "origin", rel().github.baseBranch);
-  if (await git("ls-remote", "--tags", "origin", `refs/tags/${tag}`)) throw new Error(`tag ${tag} already exists`);
-  if (await git("ls-remote", "--heads", "origin", branch)) throw new Error(`branch ${branch} already exists on origin`);
-  await git("cat-file", "-e", `${facts.head.sha}^{commit}`);
+  await git(p, "fetch", "--quiet", "--tags", "origin", rel(p).github.baseBranch);
+  if (await git(p, "ls-remote", "--tags", "origin", `refs/tags/${tag}`)) throw new Error(`tag ${tag} already exists`);
+  if (await git(p, "ls-remote", "--heads", "origin", branch)) throw new Error(`branch ${branch} already exists on origin`);
+  await git(p, "cat-file", "-e", `${facts.head.sha}^{commit}`);
 
   const dir = await mkdtemp(path.join(tmpdir(), "fledge-bump-"));
   try {
     log(`Creating ${branch} at ${facts.head.sha.slice(0, 8)} in a temporary worktree…`);
-    await git("worktree", "add", "--quiet", "-b", branch, dir, facts.head.sha);
+    await git(p, "worktree", "add", "--quiet", "-b", branch, dir, facts.head.sha);
     const wt = (...a: string[]) => run("git", ["-C", dir, ...a]).then((r) => r.stdout.trim());
 
     const pubspecPath = path.join(dir, "pubspec.yaml");
@@ -355,13 +357,13 @@ export async function publish(req: PublishRequest, log: (line: string) => void):
       const kind = req.prerelease ? "--prerelease" : "--latest";
       log(`Dry run — stopping before anything leaves this Mac. Would run:`);
       log(`  git push origin HEAD:refs/heads/${branch}`);
-      log(`  gh pr create --base ${rel().github.baseBranch} --head ${branch} --title "${prTitle}"`);
+      log(`  gh pr create --base ${rel(p).github.baseBranch} --head ${branch} --title "${prTitle}"`);
       log(`  gh release create ${tag} --target ${result.bumpSha.slice(0, 8)} --title ${tag} ${kind} --notes-file <GitHub notes, ${req.githubNotes.length} chars>`);
-      if (req.updateJira && rel().jira) {
-        const keys = [...new Set(facts.prs.filter((p) => !p.versionBump).flatMap((p) => p.tickets))];
+      if (req.updateJira && rel(p).jira) {
+        const keys = [...new Set(facts.prs.filter((pr) => !pr.versionBump).flatMap((pr) => pr.tickets))];
         const current = await jiraTickets(keys);
-        const move = keys.filter((k) => current[k]?.status === jira().fromStatus);
-        log(`  acli: move ${move.length} of ${keys.length} tickets ${jira().fromStatus} → ${jira().toStatus}: ${move.join(", ") || "none"}`);
+        const move = keys.filter((k) => current[k]?.status === jira(p).fromStatus);
+        log(`  acli: move ${move.length} of ${keys.length} tickets ${jira(p).fromStatus} → ${jira(p).toStatus}: ${move.join(", ") || "none"}`);
         log(`  acli: comment the release link on all ${keys.length}`);
       }
       log("Dry run done. The temporary branch and commit were discarded.");
@@ -370,19 +372,19 @@ export async function publish(req: PublishRequest, log: (line: string) => void):
 
     log(`Pushing ${branch}…`);
     await wt("push", "--quiet", "origin", `HEAD:refs/heads/${branch}`);
-    const remote = (await git("ls-remote", "origin", `refs/heads/${branch}`)).split("\t")[0];
+    const remote = (await git(p, "ls-remote", "origin", `refs/heads/${branch}`)).split("\t")[0];
     if (remote !== result.bumpSha) throw new Error(`push landed ${remote} instead of ${result.bumpSha}`);
 
     log("Opening the version-bump PR…");
     const bodyFile = path.join(dir, ".pr-body.md");
     await writeFile(bodyFile, bump.prBody.map((line) => fill(line, values)).join("\n"));
-    result.prUrl = await gh(["pr", "create", "--base", rel().github.baseBranch, "--head", branch, "--title", prTitle, "--body-file", bodyFile]);
+    result.prUrl = await gh(p, ["pr", "create", "--base", rel(p).github.baseBranch, "--head", branch, "--title", prTitle, "--body-file", bodyFile]);
     log(`PR: ${result.prUrl}`);
 
     log(`Creating the GitHub ${req.prerelease ? "pre-release" : "release"} ${tag}…`);
     const notesFile = path.join(dir, ".release-notes.md");
     await writeFile(notesFile, req.githubNotes);
-    result.releaseUrl = await gh([
+    result.releaseUrl = await gh(p, [
       "release", "create", tag,
       "--target", result.bumpSha,
       "--title", tag,
@@ -391,24 +393,24 @@ export async function publish(req: PublishRequest, log: (line: string) => void):
     ]);
     log(`Release: ${result.releaseUrl}`);
   } finally {
-    await git("worktree", "remove", "--force", dir).catch(() => rm(dir, { recursive: true, force: true }));
+    await git(p, "worktree", "remove", "--force", dir).catch(() => rm(dir, { recursive: true, force: true }));
     // The branch lives on origin now (or was a dry run); don't leave a local copy behind.
-    await git("branch", "-D", branch).catch(() => {});
+    await git(p, "branch", "-D", branch).catch(() => {});
   }
 
-  if (req.updateJira && rel().jira) {
-    const keys = [...new Set(facts.prs.filter((p) => !p.versionBump).flatMap((p) => p.tickets))];
+  if (req.updateJira && rel(p).jira) {
+    const keys = [...new Set(facts.prs.filter((pr) => !pr.versionBump).flatMap((pr) => pr.tickets))];
     log(`Updating ${keys.length} Jira tickets…`);
     const current = await jiraTickets(keys);
     for (const key of keys) {
       const status = current[key]?.status ?? "unknown";
       try {
         let moved: { from: string; to: string } | null = null;
-        if (status === jira().fromStatus) {
-          await run("acli", ["jira", "workitem", "transition", "--key", key, "--status", jira().toStatus, "--yes"]);
-          moved = { from: status, to: jira().toStatus };
+        if (status === jira(p).fromStatus) {
+          await run("acli", ["jira", "workitem", "transition", "--key", key, "--status", jira(p).toStatus, "--yes"]);
+          moved = { from: status, to: jira(p).toStatus };
         }
-        const text = jiraComment(tag, result.releaseUrl ?? "", req.prerelease, moved, status, jira().toStatus);
+        const text = jiraComment(tag, result.releaseUrl ?? "", req.prerelease, moved, status, jira(p).toStatus);
         await run("acli", ["jira", "workitem", "comment", "create", "--key", key, "--body", text]);
         const r = moved ? `${moved.from} → ${moved.to}` : `stays ${status}`;
         result.jira.push({ key, result: r });

@@ -14,6 +14,9 @@ export interface Checkout {
 }
 
 export interface Info {
+  project: { id: string; name: string; root: string };
+  configSource: "explicit" | "local" | "repo" | null;
+  configError: string | null;
   checkouts: Checkout[];
   flutter: string;
   cli: string;
@@ -27,6 +30,8 @@ export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancell
 
 export interface Job {
   id: string;
+  project: string;
+  projectName: string;
   checkout: string;
   branch: string;
   sha: string;
@@ -65,6 +70,7 @@ export interface PlanResult {
 }
 
 export interface BuildRequest {
+  project: string;
   checkout: string;
   targets: Target[];
   options: BuildOptions;
@@ -82,7 +88,11 @@ async function post<T>(url: string, body: unknown = {}): Promise<T> {
 }
 
 export const api = {
-  info: async (): Promise<Info> => (await fetch("/api/info")).json(),
+  info: async (project: string): Promise<Info> => {
+    const res = await fetch(`/api/info?project=${encodeURIComponent(project)}`);
+    if (!res.ok) throw new Error((await res.json()).error ?? res.statusText);
+    return res.json();
+  },
   plan: (req: BuildRequest) => post<PlanResult>("/api/plan", req),
   queue: (req: BuildRequest) => post<{ queued: number; skipped: SkippedBuild[] }>("/api/jobs", req),
   cancel: (id: string) => post(`/api/jobs/${id}/cancel`),
@@ -224,28 +234,78 @@ export interface ReleaseSettings {
   jira: { fromStatus: string; toStatus: string } | null;
 }
 
+const q = (project: string) => `project=${encodeURIComponent(project)}`;
+
 export const releaseApi = {
-  settings: async (): Promise<ReleaseSettings | null> => (await fetch("/api/release/config")).json(),
-  connections: async (): Promise<Connections> => (await fetch("/api/release/connections")).json(),
-  tags: async (): Promise<ReleaseTag[]> => (await fetch("/api/release/tags")).json(),
-  facts: (baseTag: string | null, prerelease: boolean) =>
-    post<{ facts: ReleaseFacts; templates: Notes }>("/api/release/facts", { baseTag, prerelease }),
-  template: (facts: ReleaseFacts) => post<Notes>("/api/release/template", { facts }),
-  draft: (facts: ReleaseFacts) => post<Notes & { warnings: string[]; costUsd: number }>("/api/release/draft", { facts }),
-  publish: (facts: ReleaseFacts, githubNotes: string, prerelease: boolean, updateJira: boolean, dryRun = false) =>
-    post<PublishResult>("/api/release/publish", { facts, githubNotes, prerelease, updateJira, dryRun }),
+  settings: async (project: string): Promise<ReleaseSettings | null> => (await fetch(`/api/release/config?${q(project)}`)).json(),
+  connections: async (project: string): Promise<Connections> => (await fetch(`/api/release/connections?${q(project)}`)).json(),
+  tags: async (project: string): Promise<ReleaseTag[]> => (await fetch(`/api/release/tags?${q(project)}`)).json(),
+  facts: (project: string, baseTag: string | null, prerelease: boolean) =>
+    post<{ facts: ReleaseFacts; templates: Notes }>("/api/release/facts", { project, baseTag, prerelease }),
+  template: (project: string, facts: ReleaseFacts) => post<Notes>("/api/release/template", { project, facts }),
+  draft: (project: string, facts: ReleaseFacts) =>
+    post<Notes & { warnings: string[]; costUsd: number }>("/api/release/draft", { project, facts }),
+  publish: (project: string, facts: ReleaseFacts, githubNotes: string, prerelease: boolean, updateJira: boolean, dryRun = false) =>
+    post<PublishResult>("/api/release/publish", { project, facts, githubNotes, prerelease, updateJira, dryRun }),
+};
+
+// --------------------------------------------------------------------- apps
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  root: string;
+  source: "explicit" | "local" | "repo" | null;
+  configFile: string | null;
+  error: string | null;
+  ready: boolean;
+}
+
+export interface Detected {
+  root: string;
+  config: Record<string, unknown>;
+  notes: string[];
+}
+
+export interface ConfigFile {
+  source: ProjectSummary["source"];
+  file: string | null;
+  local: string;
+  text: string;
+  error: string | null;
+}
+
+async function send<T>(method: string, url: string, body?: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method,
+    headers: { "content-type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? res.statusText);
+  return data as T;
+}
+
+export const projectsApi = {
+  list: () => send<ProjectSummary[]>("GET", "/api/projects"),
+  candidates: () => send<string[]>("GET", "/api/projects/candidates"),
+  detect: (path: string) => post<Detected>("/api/projects/detect", { path }),
+  add: (path: string, name: string, config: unknown) => post<{ id: string }>("/api/projects", { path, name, config }),
+  remove: (id: string) => send<{ ok: true }>("DELETE", `/api/projects/${id}`),
+  config: (id: string) => send<ConfigFile>("GET", `/api/projects/${id}/config`),
+  saveConfig: (id: string, config: unknown) => send<{ file: string }>("PUT", `/api/projects/${id}/config`, { config }),
 };
 
 /** Lines the server streams while a release is being published. */
-export function useReleaseLog() {
+export function useReleaseLog(project: string) {
   const [lines, setLines] = useState<string[]>([]);
   useEffect(() => {
     const es = new EventSource("/api/events");
     es.addEventListener("release", (e) => {
-      const { line } = JSON.parse((e as MessageEvent).data) as { line: string };
-      setLines((l) => [...l, line]);
+      const msg = JSON.parse((e as MessageEvent).data) as { project: string; line: string };
+      if (msg.project === project) setLines((l) => [...l, msg.line]);
     });
     return () => es.close();
-  }, []);
+  }, [project]);
   return { lines, clear: () => setLines([]) };
 }
