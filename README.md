@@ -20,14 +20,15 @@ npm install -g /tmp/fledge/*.tgz
 The package is prebuilt, so installing it runs no scripts. To update, run the
 same two lines again.
 
-Then, from your Flutter app's folder:
+Then run it:
 
 ```sh
 fledge                 # → http://localhost:4417
 fledge --help          # --repo, --config, --port
 ```
 
-The app needs a `fledge.json`; see [Configuration](#configuration).
+Run inside an app's folder, fledge opens that app, adding it to your list if
+it's new. Run anywhere else, it opens your list of apps.
 
 **Needs:** macOS, Node ≥ 20.11, and `fvm` or `flutter` on `PATH`.
 
@@ -36,12 +37,37 @@ The app needs a `fledge.json`; see [Configuration](#configuration).
 - **Releases:** `gh`, plus `acli` for Jira and the `claude` CLI for drafting notes.
 - **The Firebase sign-in badge:** `firebase`.
 
-## Configuration
+## Apps and their configs
 
-fledge reads `fledge.json` from the app repository's root, so each app keeps
-its own settings, versioned with its code. Pass `--config /path/to/file.json`
-(or set `FLEDGE_CONFIG`) to use another file. Everything is checked when fledge
-starts, because these values end up on build command lines.
+fledge manages several Flutter apps from one window: pick the app in the
+header, then its checkout. **+** adds an app: pick one of the Flutter apps
+fledge finds in your usual folders, or type its path. fledge then looks at it
+and suggests a config, with a note for everything it found or guessed:
+
+- flavors and application IDs, from `productFlavors` in `android/app/build.gradle(.kts)`
+- iOS bundle IDs and schemes, from `project.pbxproj` and the shared Xcode schemes
+- the flavor and commit defines, and on/off switches, from the
+  `String.fromEnvironment` / `bool.fromEnvironment` keys your Dart code reads
+- the GitHub repo, its base branch and which of your `gh` accounts can see it
+- the ticket prefix and version-bump conventions, from recent commits and branches
+- the Jira statuses to move between, from the statuses your recent tickets use
+- team names, from the GitHub profiles of recent PR authors
+
+You review and edit it before saving. The gear button edits it later, or
+detects it again.
+
+Each app's config is the first of these that exists:
+
+1. a file given with `fledge --config <file>` when the app was opened
+2. **your config on this Mac**, in `~/.config/fledge/projects/<app>.json`
+3. the **`fledge.json` in the app's repository**, a default shared with the team
+
+Saving in fledge always writes your own file (2), so a personal setup wins
+over the team's shared one without changing the repository. The list of apps
+is in `~/.config/fledge/projects.json`. Set `FLEDGE_HOME` to keep both
+somewhere else.
+
+## Config format
 
 Start from [fledge.example.json](fledge.example.json). The fields:
 
@@ -64,7 +90,11 @@ Start from [fledge.example.json](fledge.example.json). The fields:
 ## Builds
 
 - **Any worktree.** The checkout picker lists every `git worktree` of the
-  repository, so you can build `main` or a feature branch without switching.
+  app's repository, so you can build `main` or a feature branch without
+  switching.
+- **Shared build slots across apps.** The one-Android-and-one-iOS limit below
+  covers all apps together, since they share `~/.gradle`, Xcode and the CPU.
+  With several apps, the build list shows which app each build belongs to.
 - **One Android and one iOS build at a time.** Builds of the same platform wait
   their turn: two Gradle builds fight over `~/.gradle`'s locks, and two iOS
   builds would overwrite each other's `Generated.xcconfig`. "Prepare Xcode"
@@ -194,5 +224,6 @@ To ship a new version, bump `version` in `package.json`, commit and push to
 The UI is React with Tailwind v4, [shadcn/ui](https://ui.shadcn.com) components
 in `src/components/ui`, and [Hugeicons](https://hugeicons.com). When adding a
 component with `npx shadcn add`, replace any `lucide-react` icons with
-`@hugeicons/core-free-icons`, and change `from "cn"` to `from "@/lib/utils"`.
-The CLI gets both wrong for this setup.
+`@hugeicons/core-free-icons`, change `from "cn"` to `from "@/lib/utils"`, and
+revert the unrelated `cn` package it adds to `package.json`. The CLI gets all
+three wrong for this setup.
