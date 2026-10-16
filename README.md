@@ -7,17 +7,26 @@ queues every combination, runs one Android and one iOS build at a time with
 live logs, installs finished builds on a connected phone, and cuts the release:
 version bump, GitHub (pre-)release, Jira updates, and notes drafted with Claude.
 
+## Install
+
 ```sh
-npm install
-npm start -- --repo /path/to/your/flutter/app
-# → http://localhost:4417
+npm install -g github:yonatantasew/fledge
 ```
 
-`--repo` defaults to the git repository you start fledge from (or set
-`FLEDGE_REPO`). The app needs a `fledge.json`; see [Configuration](#configuration).
+While the repository is private, git needs your GitHub login to fetch it. If
+the install says the repository wasn't found, run `gh auth setup-git` once,
+then try again. To update later, run the same command.
 
-**Needs:** macOS, Node ≥ 23.6 (it runs the TypeScript server directly), and
-`fvm` or `flutter` on `PATH`.
+Then, from your Flutter app's folder:
+
+```sh
+fledge                 # → http://localhost:4417
+fledge --help          # --repo, --config, --port
+```
+
+The app needs a `fledge.json`; see [Configuration](#configuration).
+
+**Needs:** macOS, Node ≥ 20.11, and `fvm` or `flutter` on `PATH`.
 
 **Optional:**
 - **Installing on devices:** Xcode (`xcrun devicectl`) and the Android SDK (`adb`).
@@ -163,10 +172,16 @@ Publish refuses a tag or branch that already exists.
 
 ## Development
 
+Running from a clone needs Node ≥ 23.6, which runs the TypeScript server
+directly.
+
 ```sh
+npm install
 npm run dev -- --repo /path/to/app   # Vite hot reload through the same server
+npm start -- --repo /path/to/app     # build the UI, then serve it
 npm test                             # node:test
 npm run typecheck
+npm run build                        # what the installed command runs: dist/ and dist-server/
 ```
 
 The UI is React with Tailwind v4, [shadcn/ui](https://ui.shadcn.com) components
