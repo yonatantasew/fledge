@@ -9,13 +9,16 @@ version bump, GitHub (pre-)release, Jira updates, and notes drafted with Claude.
 
 ## Install
 
+fledge is installed from its GitHub releases. You need the GitHub CLI (`gh`),
+logged in with an account that can see this repository:
+
 ```sh
-npm install -g github:yonatantasew/fledge
+gh release download --repo yonatantasew/fledge --pattern '*.tgz' --dir /tmp/fledge --clobber
+npm install -g /tmp/fledge/*.tgz
 ```
 
-While the repository is private, git needs your GitHub login to fetch it. If
-the install says the repository wasn't found, run `gh auth setup-git` once,
-then try again. To update later, run the same command.
+The package is prebuilt, so installing it runs no scripts. To update, run the
+same two lines again.
 
 Then, from your Flutter app's folder:
 
@@ -182,7 +185,11 @@ npm start -- --repo /path/to/app     # build the UI, then serve it
 npm test                             # node:test
 npm run typecheck
 npm run build                        # what the installed command runs: dist/ and dist-server/
+npm run release                      # tests, packs and publishes a GitHub release of "version"
 ```
+
+To ship a new version, bump `version` in `package.json`, commit and push to
+`main`, then run `npm run release`.
 
 The UI is React with Tailwind v4, [shadcn/ui](https://ui.shadcn.com) components
 in `src/components/ui`, and [Hugeicons](https://hugeicons.com). When adding a
