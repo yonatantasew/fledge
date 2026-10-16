@@ -1,0 +1,32 @@
+{
+  "flavors": [
+    { "name": "dev", "label": "Dev", "androidId": "com.example.myapp.dev", "iosId": "com.example.myapp.dev", "xcodeScheme": "dev" },
+    { "name": "staging", "label": "Staging", "androidId": "com.example.myapp.staging", "iosId": "com.example.myapp.staging", "xcodeScheme": "staging" },
+    { "name": "prod", "label": "Production", "androidId": "com.example.myapp", "iosId": "com.example.myapp", "xcodeScheme": "prod", "confirm": true }
+  ],
+  "flavorDefine": "FLAVOR",
+  "gitShaDefine": "GIT_SHA",
+  "defines": { "BUILD_SOURCE": "local" },
+  "symbolsDir": "build/symbols/{flavor}/{platform}",
+  "toggles": [
+    {
+      "id": "verboseLogs",
+      "label": "Verbose logs",
+      "hint": "Logs every network request and response.",
+      "define": "VERBOSE_LOGS=true",
+      "skipFlavors": ["prod"]
+    }
+  ],
+  "release": {
+    "github": { "repo": "your-org/your-app", "baseBranch": "main" },
+    "channel": "Test builds",
+    "tickets": { "project": "PROJ" },
+    "versionBump": {
+      "branch": "release/bump-{versionSlug}",
+      "commitMessage": "Bump version to {tag}",
+      "prTitle": "Bump version to {tag}"
+    },
+    "jira": { "site": "https://your-company.atlassian.net", "fromStatus": "Ready for test", "toStatus": "In Testing" },
+    "team": { "octocat": "Mona" }
+  }
+}
