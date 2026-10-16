@@ -1,9 +1,10 @@
 // `npm run release`: publishes the current version as a GitHub release with the
 // built package attached, which is what people install (see README â†’ Install).
 //
-// A prebuilt package installs without running any scripts. Installing straight
-// from the repository has to build on the user's machine, which recent npm
-// blocks until install scripts are approved.
+// A prebuilt package installs without running any scripts, so fledge has no
+// install-time scripts at all. (Installing straight from the repository would
+// have to build on the user's machine, which recent npm blocks until scripts
+// are approved.)
 
 import { execFileSync } from "node:child_process";
 import { readFileSync, rmSync, mkdtempSync } from "node:fs";
@@ -25,7 +26,7 @@ if (sh("git", ["tag", "--list", tag])) throw new Error(`${tag} already exists â€
 execFileSync("npm", ["test"], { cwd: root, stdio: "inherit" });
 const out = mkdtempSync(path.join(tmpdir(), "fledge-release-"));
 try {
-  // npm pack runs `prepare`, so the package carries a fresh dist/ and dist-server/.
+  execFileSync("npm", ["run", "build"], { cwd: root, stdio: "inherit" }); // fresh dist/ and dist-server/
   const file = path.join(out, sh("npm", ["pack", "--silent", "--pack-destination", out]).split("\n").pop());
   execFileSync(
     "gh",

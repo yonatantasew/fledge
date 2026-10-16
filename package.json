@@ -18,7 +18,6 @@
     "dev": "node --watch server/index.ts --dev",
     "start": "vite build && node server/index.ts",
     "build": "vite build && vite build --ssr server/index.ts --outDir dist-server --emptyOutDir",
-    "prepare": "node scripts/prepare.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node --test server/*.test.ts",
     "release": "node scripts/release.mjs"
