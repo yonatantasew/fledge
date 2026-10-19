@@ -19,7 +19,7 @@
     "start": "vite build && node server/index.ts",
     "build": "vite build && vite build --ssr server/index.ts --outDir dist-server --emptyOutDir",
     "typecheck": "tsc --noEmit",
-    "test": "node --test server/*.test.ts",
+    "test": "node --test server/*.test.ts server/ai/*.test.ts",
     "release": "node scripts/release.mjs"
   },
   "engines": {
