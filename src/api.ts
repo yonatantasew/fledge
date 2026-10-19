@@ -311,3 +311,66 @@ export function useReleaseLog(project: string) {
   }, [project]);
   return { lines, clear: () => setLines([]) };
 }
+
+// ---------------------------------------------------------------- assistant
+
+export interface AiPreset {
+  label: string;
+  kind: "claude-cli" | "anthropic" | "openai";
+  baseUrl?: string;
+  needsKey: boolean;
+  modelHint: string;
+}
+
+export interface AiProvider {
+  id: string;
+  preset: string;
+  name: string;
+  kind: AiPreset["kind"];
+  baseUrl?: string;
+  model: string;
+  effort?: "low" | "medium" | "high" | "xhigh" | "max";
+  fallbacks?: boolean;
+  hasKey: boolean;
+}
+
+export type AiEvent =
+  | { type: "start"; provider: string; model: string }
+  | { type: "text"; delta: string }
+  | { type: "tool"; id: string; name: string; input: unknown }
+  | { type: "tool_result"; id: string; name: string; isError: boolean; preview: string }
+  | { type: "note"; text: string }
+  | { type: "done" }
+  | { type: "error"; message: string };
+
+export type AiServerMessage =
+  | { role: "user"; text: string }
+  | { role: "assistant"; text: string; toolCalls: { id: string; name: string; input: unknown }[] }
+  | { role: "tool"; results: { id: string; name: string; content: string; isError?: boolean }[] };
+
+export const aiApi = {
+  providers: () => send<{ active: string | null; presets: Record<string, AiPreset>; providers: AiProvider[] }>("GET", "/api/ai/providers"),
+  saveProvider: (p: Record<string, unknown>) => post<AiProvider>("/api/ai/providers", p),
+  removeProvider: (id: string) => send<{ ok: true }>("DELETE", `/api/ai/providers/${id}`),
+  setActive: (id: string) => post<{ ok: true }>(`/api/ai/providers/${id}/active`),
+  models: (q: { id?: string; preset: string; baseUrl?: string; apiKey?: string }) => post<string[]>("/api/ai/models", q),
+  conversations: () => send<{ id: string; app: string | null; title: string; busy: boolean; updatedAt: number }[]>("GET", "/api/ai/conversations"),
+  newConversation: (app: string | null) => post<{ id: string }>("/api/ai/conversations", { app }),
+  conversation: (id: string) => send<{ id: string; app: string | null; title: string; busy: boolean; messages: AiServerMessage[] }>("GET", `/api/ai/conversations/${id}`),
+  send: (id: string, text: string) => post<{ ok: true }>(`/api/ai/conversations/${id}/messages`, { text }),
+};
+
+/** Live assistant events for one conversation. */
+export function useAssistantEvents(conversation: string | null, onEvent: (e: AiEvent) => void) {
+  const handler = useRef(onEvent);
+  handler.current = onEvent;
+  useEffect(() => {
+    if (!conversation) return;
+    const es = new EventSource("/api/events");
+    es.addEventListener("assistant", (e) => {
+      const msg = JSON.parse((e as MessageEvent).data) as { conversation: string; event: AiEvent };
+      if (msg.conversation === conversation) handler.current(msg.event);
+    });
+    return () => es.close();
+  }, [conversation]);
+}

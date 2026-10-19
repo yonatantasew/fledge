@@ -1,5 +1,6 @@
 import {
   Add01Icon,
+  AiChat02Icon,
   Alert02Icon,
   FolderAddIcon,
   GitBranchIcon,
@@ -15,6 +16,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, projectsApi, useJobs, type Info, type ProjectSummary } from "@/api";
 import { AddAppDialog } from "@/components/AddAppDialog";
+import { Assistant } from "@/components/Assistant";
 import { BuildForm } from "@/components/BuildForm";
 import { ConfigDialog } from "@/components/ConfigDialog";
 import { FirebaseLogin } from "@/components/FirebaseLogin";
@@ -70,6 +72,8 @@ export function App() {
   const [infoError, setInfoError] = useState<string | null>(null);
   const [checkoutPath, setCheckoutPath] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [assistant, setAssistant] = useState(() => stored("fledge:assistant") === "open");
+  useEffect(() => store("fledge:assistant", assistant ? "open" : "closed"), [assistant]);
   const [editing, setEditing] = useState(false);
   const { jobs, logs, loadLog, connected } = useJobs();
   const [selected, setSelected] = useState<string | null>(null);
@@ -243,6 +247,10 @@ export function App() {
                 </>
               )}
               <FirebaseLogin />
+              <Button variant={assistant ? "secondary" : "outline"} className="h-9 gap-1.5" onClick={() => setAssistant(!assistant)}>
+                <HugeiconsIcon icon={AiChat02Icon} className="size-4" />
+                Assistant
+              </Button>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
@@ -345,6 +353,8 @@ export function App() {
             </main>
           </>
         )}
+
+        {assistant && <Assistant app={projectId} onClose={() => setAssistant(false)} />}
 
         <AddAppDialog
           open={adding}
