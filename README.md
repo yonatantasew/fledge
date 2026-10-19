@@ -6,6 +6,8 @@ Pick the platforms, flavors and build types (debug / profile / release). fledge
 queues every combination, runs one Android and one iOS build at a time with
 live logs, installs finished builds on a connected phone, and cuts the release:
 version bump, GitHub (pre-)release, Jira updates, and notes drafted with Claude.
+An assistant panel answers questions about builds, branches and releases, using
+whichever model you give it.
 
 ## Install
 
@@ -36,6 +38,8 @@ it's new. Run anywhere else, it opens your list of apps.
 - **Installing on devices:** Xcode (`xcrun devicectl`) and the Android SDK (`adb`).
 - **Releases:** `gh`, plus `acli` for Jira and the `claude` CLI for drafting notes.
 - **The Firebase sign-in badge:** `firebase`.
+- **The assistant:** a model: the `claude` CLI login, an API key, or a local
+  model through Ollama or LM Studio.
 
 ## Apps and their configs
 
@@ -242,6 +246,30 @@ stores no tokens.
 If a GitHub workflow already updates Jira on release, turn **Update Jira from
 here** off, or every ticket gets two comments.
 
+## Assistant
+
+**Assistant** in the header opens a chat about the app that's open. It looks
+things up with fledge's own tools instead of guessing: builds and their logs,
+checkouts, git history and branches, releases and the changes since the last
+one, Jira tickets (`acli`), connected devices, and the exact command a build
+would run. For now it only reads; asked to change something, it says what it
+would do.
+
+Add models with the gear in the panel:
+
+- **Claude CLI:** the `claude` login you already have; no key.
+- **Anthropic API:** a key, or empty to use `ANTHROPIC_API_KEY` or
+  `ant auth login`. Effort and the refusal fallback are set per model.
+- **OpenAI-compatible:** OpenAI, Gemini, OpenRouter, Groq, or any base URL.
+- **Local:** Ollama (`localhost:11434`) and LM Studio (`localhost:1234`); nothing
+  leaves the Mac.
+
+**List models** asks the provider which models the key can use. Keys are
+stored in the macOS keychain (service `fledge-assistant`) and never sent to the
+page; the rest of the settings is `~/.config/fledge/assistant.json`. What you
+ask, and what the tools look up, goes to the model's provider. Conversations
+live in memory until fledge stops.
+
 ## Xcode
 
 - **Distribute from an IPA build (preferred).** An IPA build keeps the
@@ -270,7 +298,8 @@ login. When it's signed out, **Log in to Firebase** runs
 The server listens on `127.0.0.1` only. It rejects requests whose `Host` or
 `Origin` isn't fledge, which blocks DNS rebinding and cross-site POSTs. Commands
 are built from fixed lists and the checked `fledge.json`, never through a
-shell. A device ID must match a device that's connected at that moment, and
+shell. The assistant's tools check every input before running, and refuse a
+git ref that starts with `-`. A device ID must match a device that's connected at that moment, and
 Publish refuses a tag or branch that already exists.
 
 ## Development
