@@ -7,6 +7,8 @@ import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { parseConfig } from "./config.ts";
+import { generateCommands } from "./templates.ts";
 import {
   bumpTemplatesFrom,
   fromEnvironmentKeys,
@@ -19,6 +21,13 @@ import {
   parsePbxBundleIds,
   schemeFor,
   ticketProjectFrom,
+  ciBuildDefines,
+  ciEnvironmentMatrix,
+  environmentKey,
+  environmentValuesInDart,
+  environmentsFromEntryFiles,
+  parseLaunchConfigs,
+  type RunConfig,
 } from "./detect-parse.ts";
 
 const run = promisify(execFile);
@@ -44,7 +53,29 @@ async function dartSources(dir: string, out: string[] = []): Promise<string[]> {
 
 const label = (name: string) => (name.length <= 3 ? name.toUpperCase() : name.charAt(0).toUpperCase() + name.slice(1));
 
+/**
+ * The suggestion with its build commands written out as text, so the person
+ * adding the app sees and can edit exactly what will run. The fields folded
+ * into the commands are dropped.
+ */
+function withCommands(d: Detection): Detection {
+  try {
+    const commands = generateCommands(parseConfig(d.config));
+    const config = { ...d.config };
+    for (const k of ["flavorDefine", "gitShaDefine", "defines", "defineFiles", "args"]) delete config[k];
+    // Keep "flutter" and the environments first, then the commands, then the rest.
+    const { flutter, flavors, ...rest } = config;
+    return { config: { flutter, flavors, commands, ...rest }, notes: d.notes };
+  } catch {
+    return d; // an incomplete suggestion stays field-based; the dialog shows what's missing
+  }
+}
+
 export async function detectProject(root: string): Promise<Detection> {
+  return withCommands(await detectFields(root));
+}
+
+async function detectFields(root: string): Promise<Detection> {
   const notes: string[] = [];
   const config: Record<string, unknown> = {};
 
@@ -58,41 +89,131 @@ export async function detectProject(root: string): Promise<Detection> {
     .map((f) => f.replace(/\.xcscheme$/, ""))
     .filter((s) => s !== "Runner");
 
-  let names = gradle.map((f) => f.name);
-  if (names.length) {
-    notes.push(`Flavors ${names.join(", ")} come from productFlavors in ${path.relative(root, gradleFile!)}.`);
-  } else if (schemes.length) {
-    names = schemes.map((s) => s.toLowerCase());
-    notes.push(`No Android productFlavors found; flavors ${names.join(", ")} come from the Xcode schemes.`);
-  } else {
-    notes.push("No flavors found (no Android productFlavors or Xcode schemes). fledge builds with --flavor, so add them by hand.");
+  const dart = await dartSources(path.join(root, "lib"));
+  const keys = fromEnvironmentKeys(dart.join("\n"));
+  const strings = keys.filter((k) => k.type === "String").map((k) => k.key);
+  const envKey = environmentKey(strings);
+  const ciFiles = [
+    ...(await readdir(path.join(root, ".github/workflows")).catch(() => [] as string[]))
+      .filter((f) => /\.ya?ml$/.test(f))
+      .map((f) => `.github/workflows/${f}`),
+    "Makefile",
+    "codemagic.yaml",
+    "bitrise.yml",
+  ];
+  const ci = (await Promise.all(ciFiles.map((f) => readFile(path.join(root, f), "utf8").catch(() => "")))).join("\n");
+
+  const launch = parseLaunchConfigs(await readFile(path.join(root, ".vscode/launch.json"), "utf8").catch(() => ""));
+  const entryFiles = environmentsFromEntryFiles(await readdir(path.join(root, "lib")).catch(() => [] as string[]));
+
+  interface Env {
+    name: string;
+    flavor: string | null;
+    target?: string;
+    defines: Record<string, string>;
+    defineFiles: string[];
   }
-  config.flavors = names.map((name) => {
-    const f: Record<string, unknown> = { name, label: label(name) };
-    const androidId = gradle.find((g) => g.name === name)?.applicationId;
-    const iosId = iosIdFor(name, iosIds);
-    const scheme = schemeFor(name, schemes);
+  // What a run configuration (or a main_<env>.dart file) adds to an environment.
+  const extras = (match: (c: RunConfig) => boolean, name: string): Omit<Env, "name" | "flavor"> => {
+    const c = launch.find(match);
+    return {
+      target: c?.target ?? entryFiles.find((e) => e.name === name)?.target,
+      defines: c?.defines ?? {},
+      defineFiles: c?.defineFiles ?? [],
+    };
+  };
+
+  let envs: Env[];
+  if (gradle.length) {
+    envs = gradle.map((g) => ({ name: g.name, flavor: g.name, ...extras((c) => c.flavor === g.name, g.name) }));
+    notes.push(`Environments ${envs.map((e) => e.name).join(", ")} are the productFlavors in ${path.relative(root, gradleFile!)}.`);
+  } else if (schemes.length) {
+    envs = schemes.map((sc) => sc.toLowerCase()).map((n) => ({ name: n, flavor: n, ...extras((c) => c.flavor === n, n) }));
+    notes.push(`No Android productFlavors found; environments ${envs.map((e) => e.name).join(", ")} come from the Xcode schemes.`);
+  } else if (launch.some((c) => c.target)) {
+    envs = launch.map((c) => {
+      const name = /main_([a-z0-9_]+)\.dart$/.exec(c.target ?? "")?.[1] ?? (c.name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "default");
+      return { name, flavor: c.flavor ?? null, target: c.target, defines: c.defines, defineFiles: c.defineFiles };
+    });
+    notes.push(`No native flavors; environments ${envs.map((e) => e.name).join(", ")} come from .vscode/launch.json, each with its own entry file.`);
+  } else if (entryFiles.length) {
+    envs = entryFiles.map((e) => ({ name: e.name, flavor: null, target: e.target, defines: {}, defineFiles: [] }));
+    notes.push(`No native flavors; environments ${envs.map((e) => e.name).join(", ")} come from the lib/main_<environment>.dart entry files.`);
+  } else {
+    const matrix = ciEnvironmentMatrix(ci);
+    const values = matrix.length >= 2 ? matrix : environmentValuesInDart(dart);
+    if (envKey && values.length >= 2) {
+      envs = values.map((v) => ({ name: v, flavor: null, defines: {}, defineFiles: [] }));
+      notes.push(
+        `No native flavors; your app picks its environment with ${envKey}, so there's one environment per value ` +
+          `(${values.join(", ")}, from ${matrix.length >= 2 ? "the CI build matrix" : "the values your Dart code compares against"}). ` +
+          `Each build passes --dart-define=${envKey}=<environment>.`,
+      );
+    } else {
+      envs = [{ name: "default", flavor: null, defines: {}, defineFiles: [] }];
+      notes.push(
+        envKey
+          ? `Your app reads ${envKey}, but fledge couldn't tell its values; there's one environment for now. Add one per value (its name is what ${envKey} gets).`
+          : "No flavors or per-environment entry files found, so there's one environment that builds without --flavor. Add more if the app has them.",
+      );
+    }
+  }
+  if (launch.length) notes.push("Entry files, defines and define files were taken from .vscode/launch.json where a configuration matched.");
+
+  // A define file every environment uses belongs to all builds.
+  const shared = envs[0].defineFiles.filter((f) => envs.every((e) => e.defineFiles.includes(f)));
+  if (envs.length > 1 && shared.length) {
+    config.defineFiles = shared;
+    for (const e of envs) e.defineFiles = e.defineFiles.filter((f) => !shared.includes(f));
+  }
+  const missingFiles = [...new Set([...shared, ...envs.flatMap((e) => e.defineFiles)])].filter((f) => !existsSync(path.join(root, f)));
+  if (missingFiles.length) notes.push(`Define files not found in the repo (maybe gitignored, so check they exist on this Mac): ${missingFiles.join(", ")}.`);
+
+  const names = envs.map((e) => e.name);
+  config.flavors = envs.map((e) => {
+    const f: Record<string, unknown> = { name: e.name, label: label(e.name) };
+    if (e.flavor !== e.name) f.flavor = e.flavor;
+    if (e.target) f.target = e.target;
+    if (Object.keys(e.defines).length) f.defines = e.defines;
+    if (e.defineFiles.length) f.defineFiles = e.defineFiles;
+    const androidId = gradle.find((g) => g.name === e.flavor)?.applicationId;
+    const iosId = e.flavor ? iosIdFor(e.flavor, iosIds) : (iosIds.Release ?? iosIds.Profile ?? iosIds.Debug);
+    const scheme = e.flavor ? schemeFor(e.flavor, schemes) : undefined;
     if (androidId) f.androidId = androidId;
     if (iosId) f.iosId = iosId;
     if (scheme) f.xcodeScheme = scheme;
-    else if (schemes.length) notes.push(`No Xcode scheme matches "${name}"; set xcodeScheme for Prepare Xcode.`);
-    if (looksLikeProduction(name)) f.confirm = true;
+    else if (e.flavor && schemes.length) notes.push(`No Xcode scheme matches "${e.flavor}"; set xcodeScheme for Prepare Xcode.`);
+    if (looksLikeProduction(e.name)) f.confirm = true;
     return f;
   });
+
+  // How Flutter is run: "auto" follows the project's own files, per checkout.
+  config.flutter = "auto";
+  if (existsSync(path.join(root, ".fvmrc")) || existsSync(path.join(root, ".fvm/fvm_config.json"))) {
+    notes.push('The project pins Flutter with fvm (.fvmrc), so builds run "fvm flutter".');
+  } else if (existsSync(path.join(root, ".puro.json"))) {
+    notes.push('The project uses puro (.puro.json), so builds run "puro flutter".');
+  } else {
+    notes.push('No fvm or puro config found, so builds run plain "flutter". Change "flutter" in the config if you use something else.');
+  }
   const prod = names.filter(looksLikeProduction);
   if (prod.length) notes.push(`${prod.join(", ")} looks like production, so it asks for a second click before building.`);
 
   // ---------------------------------------------------------------- defines
-  const keys = fromEnvironmentKeys((await dartSources(path.join(root, "lib"))).join("\n"));
-  const strings = keys.filter((k) => k.type === "String").map((k) => k.key);
-  const flavorKey =
-    strings.find((k) => /^(FLAVOR|APP_FLAVOR|ENV|APP_ENV|ENVIRONMENT)$/.test(k)) ?? strings.find((k) => /FLAVOR/.test(k));
+  const flavorKey = envKey;
   const shaKey = strings.find((k) => /^(GIT_SHA|GIT_COMMIT|COMMIT_SHA|BUILD_SHA)$/.test(k));
   config.flavorDefine = flavorKey ?? null;
   config.gitShaDefine = shaKey ?? null;
+  // fledge passes these itself; drop copies a run configuration carried.
+  for (const f of config.flavors as Record<string, unknown>[]) {
+    const d = f.defines as Record<string, string> | undefined;
+    if (!d) continue;
+    for (const k of [flavorKey, shaKey]) if (k) delete d[k];
+    if (!Object.keys(d).length) delete f.defines;
+  }
   notes.push(
     flavorKey
-      ? `Your Dart code reads ${flavorKey}, so every build passes --dart-define=${flavorKey}=<flavor>.`
+      ? `Your Dart code reads ${flavorKey}, so every build passes --dart-define=${flavorKey}=<environment>.`
       : "Your Dart code doesn't seem to read the flavor from a define, so none is passed.",
   );
   if (shaKey) notes.push(`Your Dart code reads ${shaKey}; builds pass the checkout's commit in it.`);
@@ -104,6 +225,14 @@ export async function detectProject(root: string): Promise<Detection> {
   config.defines = defines;
   const otherStrings = strings.filter((k) => k !== flavorKey && k !== shaKey && k !== "BUILD_SOURCE");
   if (otherStrings.length) notes.push(`Your code also reads ${otherStrings.join(", ")}; add any that builds need under "defines".`);
+  const ciDefines = ciBuildDefines(ci).filter((d) => d.key !== flavorKey && d.key !== shaKey && !(d.key in defines));
+  const fromVariables = ciDefines.filter((d) => d.variable).map((d) => d.key);
+  if (fromVariables.length) {
+    notes.push(`Your CI also passes ${fromVariables.join(", ")} from its own variables or secrets; add them under each environment's "defines" if local builds need them.`);
+  }
+  for (const d of ciDefines.filter((x) => !x.variable)) defines[d.key] = d.value;
+  const fixed = ciDefines.filter((d) => !d.variable).map((d) => `${d.key}=${d.value}`);
+  if (fixed.length) notes.push(`Copied fixed defines from your CI build command: ${fixed.join(", ")}.`);
 
   const bools = keys.filter((k) => k.type === "bool").map((k) => k.key);
   config.toggles = bools.map((key) => ({

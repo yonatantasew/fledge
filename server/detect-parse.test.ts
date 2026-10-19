@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   bumpTemplatesFrom,
+  ciBuildDefines,
+  ciEnvironmentMatrix,
+  environmentKey,
+  environmentValuesInDart,
+  environmentsFromEntryFiles,
+  parseLaunchConfigs,
   fromEnvironmentKeys,
   githubRepoFromUrl,
   humanize,
@@ -115,4 +121,48 @@ test("gh hosts.yml: logged-in accounts and the active one", () => {
   const yml = "github.com:\n    git_protocol: https\n    users:\n        work-login:\n            oauth_token: x\n        me:\n    user: me\nghe.example.com:\n    user: other\n";
   assert.deepEqual(parseGhHosts(yml), { accounts: ["work-login", "me"], active: "me" });
   assert.deepEqual(parseGhHosts(""), { accounts: [], active: undefined });
+});
+
+test("launch.json: flavor, entry file, defines and define files, with comments and trailing commas", () => {
+  const jsonc = `{
+    // run configs
+    "configurations": [
+      { "name": "Staging", "type": "dart", "request": "launch", "program": "lib/main_staging.dart",
+        "args": ["--flavor", "staging", "--dart-define-from-file=config/staging.json", "--dart-define", "API=https://s.example.com",], },
+      { "name": "Prod", "type": "dart", "args": ["--flavor=prod", "-t", "\${workspaceFolder}/lib/main_prod.dart"] },
+      { "name": "Attach", "type": "dart", "request": "attach" },
+      { "name": "Chrome", "type": "pwa-chrome", "args": ["--flavor", "x"] },
+    ],
+  }`;
+  assert.deepEqual(parseLaunchConfigs(jsonc), [
+    { name: "Staging", flavor: "staging", target: "lib/main_staging.dart", defines: { API: "https://s.example.com" }, defineFiles: ["config/staging.json"] },
+    { name: "Prod", flavor: "prod", target: "lib/main_prod.dart", defines: {}, defineFiles: [] },
+  ]);
+  assert.deepEqual(parseLaunchConfigs("not json"), []);
+});
+
+test("environments from lib/main_<env>.dart", () => {
+  assert.deepEqual(environmentsFromEntryFiles(["main.dart", "main_dev.dart", "main_prod.dart", "app.dart"]), [
+    { name: "dev", target: "lib/main_dev.dart" },
+    { name: "prod", target: "lib/main_prod.dart" },
+  ]);
+});
+
+test("environment key, values from Dart comparisons and from a CI matrix", () => {
+  assert.equal(environmentKey(["GIT_SHA", "APP_ENVIRONMENT"]), "APP_ENVIRONMENT");
+  assert.equal(environmentKey(["BASE_URL", "MY_APP_ENV"]), "MY_APP_ENV");
+  assert.equal(environmentKey(["BASE_URL"]), undefined);
+  const dart = ["if (environment == 'production') {}", "switch (env) { case 'staging': break; case 'sandbox': break; case 'blue': break; }"];
+  assert.deepEqual(environmentValuesInDart(dart), ["production", "staging", "sandbox"]);
+  assert.deepEqual(ciEnvironmentMatrix("    strategy:\n      matrix:\n        environment: [ sandbox, staging, production ]\n"), ["sandbox", "staging", "production"]);
+  assert.deepEqual(ciEnvironmentMatrix("matrix:\n  os: [ubuntu]\n"), []);
+});
+
+test("dart-defines on CI build lines, marking ones that come from variables", () => {
+  const yml = "run: flutter build apk --release --dart-define=BASE_URL=$BASE_URL --dart-define=APP_ENVIRONMENT=staging --dart-define=V=${{ env.TAG }}\nrun: echo --dart-define=NOT=me";
+  assert.deepEqual(ciBuildDefines(yml), [
+    { key: "BASE_URL", value: "$BASE_URL", variable: true },
+    { key: "APP_ENVIRONMENT", value: "staging", variable: false },
+    { key: "V", value: "${{", variable: true },
+  ]);
 });

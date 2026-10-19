@@ -185,3 +185,89 @@ export function parseGhHosts(yml: string): { accounts: string[]; active?: string
     active: /^[ \t]+user:[ \t]*(\S+)/m.exec(section)?.[1],
   };
 }
+
+export interface RunConfig {
+  name: string;
+  flavor?: string;
+  target?: string;
+  defines: Record<string, string>;
+  defineFiles: string[];
+}
+
+/** Flutter run settings from .vscode/launch.json (JSON with comments and trailing commas). */
+export function parseLaunchConfigs(jsonc: string): RunConfig[] {
+  let data: { configurations?: { name?: string; type?: string; program?: string; args?: unknown; toolArgs?: unknown }[] };
+  try {
+    data = JSON.parse(stripComments(jsonc).replace(/,(\s*[}\]])/g, "$1"));
+  } catch {
+    return [];
+  }
+  return (data.configurations ?? [])
+    .filter((c) => !c.type || c.type === "dart")
+    .map((c) => {
+      const args = [...(Array.isArray(c.args) ? c.args : []), ...(Array.isArray(c.toolArgs) ? c.toolArgs : [])].map(String);
+      const out: RunConfig = { name: c.name ?? "", defines: {}, defineFiles: [] };
+      if (c.program && /\.dart$/.test(c.program)) out.target = c.program.replace(/^\$\{workspaceFolder\}\//, "");
+      for (let i = 0; i < args.length; i++) {
+        const [flag, inline] = args[i].includes("=") ? [args[i].slice(0, args[i].indexOf("=")), args[i].slice(args[i].indexOf("=") + 1)] : [args[i], undefined];
+        const value = () => inline ?? args[++i];
+        if (flag === "--flavor") out.flavor = value();
+        else if (flag === "-t" || flag === "--target") out.target = value()?.replace(/^\$\{workspaceFolder\}\//, "");
+        else if (flag === "--dart-define-from-file") out.defineFiles.push(value());
+        else if (flag === "--dart-define") {
+          const kv = value() ?? "";
+          const eq = kv.indexOf("=");
+          if (eq > 0) out.defines[kv.slice(0, eq)] = kv.slice(eq + 1);
+        }
+      }
+      return out;
+    })
+    .filter((c) => c.flavor || c.target || c.defineFiles.length || Object.keys(c.defines).length);
+}
+
+/** Environments from per-environment entry files: lib/main_staging.dart → "staging". */
+export function environmentsFromEntryFiles(files: string[]): { name: string; target: string }[] {
+  return files
+    .map((f) => /^main_([a-z0-9_]+)\.dart$/.exec(f))
+    .filter((m): m is RegExpExecArray => !!m)
+    .map((m) => ({ name: m[1], target: `lib/${m[0]}` }));
+}
+
+const ENV_WORDS = new Set(["dev", "development", "develop", "staging", "stage", "uat", "qa", "test", "testing", "sandbox", "preprod", "demo", "prod", "production", "release", "live"]);
+
+/** A define key that selects the environment: FLAVOR, APP_ENVIRONMENT, APP_ENV, … */
+export function environmentKey(keys: string[]): string | undefined {
+  return (
+    keys.find((k) => /^(FLAVOR|APP_FLAVOR|ENV|APP_ENV|ENVIRONMENT|APP_ENVIRONMENT)$/.test(k)) ??
+    keys.find((k) => /(FLAVOR|_ENV|ENVIRONMENT)$/.test(k))
+  );
+}
+
+/** Environment names the Dart code compares against (`== 'staging'`, `case 'production':`), in order of appearance. */
+export function environmentValuesInDart(sources: string[]): string[] {
+  const out: string[] = [];
+  for (const src of sources) {
+    for (const m of src.matchAll(/(?:==\s*|case\s+)['"]([a-z][a-z0-9_]*)['"]/g)) {
+      if (ENV_WORDS.has(m[1]) && !out.includes(m[1])) out.push(m[1]);
+    }
+  }
+  return out;
+}
+
+/** Values of an environment/flavor list in a CI matrix: `environment: [ sandbox, staging, production ]`. */
+export function ciEnvironmentMatrix(yaml: string): string[] {
+  const m = /^\s*(?:environment|env|flavor|flavour)s?:\s*\[([^\]]+)\]/im.exec(yaml);
+  return m ? m[1].split(",").map((v) => v.trim().replace(/^['"]|['"]$/g, "")).filter((v) => /^[a-z][a-z0-9_]*$/.test(v)) : [];
+}
+
+/** --dart-define flags on CI `flutter build` lines; `variable` when the value comes from a CI variable or secret. */
+export function ciBuildDefines(text: string): { key: string; value: string; variable: boolean }[] {
+  const out: { key: string; value: string; variable: boolean }[] = [];
+  for (const line of text.split("\n").filter((l) => /flutter\s+build\b/.test(l))) {
+    for (const m of line.matchAll(/--dart-define[= ]([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S+)/g)) {
+      const value = m[2].replace(/^['"]|['"]$/g, "");
+      if (!out.some((d) => d.key === m[1])) out.push({ key: m[1], value, variable: /\$/.test(value) });
+    }
+  }
+  return out;
+}
