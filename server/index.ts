@@ -17,12 +17,13 @@ import { appendFile, cp, mkdir, readdir, readFile, stat, writeFile } from "node:
 import http from "node:http";
 import path from "node:path";
 import { promisify } from "node:util";
-import { artifactPath, parseRequest, planBuild, XCARCHIVE_PATH, type PlannedBuild, type SkippedBuild } from "./commands.ts";
+import { artifactPath, parseRequest, planBuild, resolveFlutter, XCARCHIVE_PATH, type PlannedBuild, type SkippedBuild } from "./commands.ts";
+import { generateCommands, tokenize } from "./templates.ts";
 import { cancelLogin, firebaseStatus, onFirebaseChange, startLogin } from "./firebase.ts";
 import { templateGithub, templateSlack, type ReleaseFacts } from "./notes.ts";
 import { connections, draftWithClaude, gatherFacts, publish, releases, validatePublish } from "./release.ts";
 import { startable } from "./scheduler.ts";
-import { flavorOf, type FledgeConfig } from "./config.ts";
+import { flavorOf, parseConfig, type FledgeConfig } from "./config.ts";
 import { detectProject } from "./detect.ts";
 import {
   addProject,
@@ -104,19 +105,38 @@ async function usableProject(id: unknown): Promise<{ project: Project & { config
   return { project: project as Project & { config: FledgeConfig } };
 }
 
-const FLUTTER_CMD = await run("which", ["fvm"]).then(
-  () => "fvm",
-  () => "flutter",
-);
+/** The command that runs Flutter in a checkout, per the app's `flutter` setting. */
+function flutterFor(config: FledgeConfig, checkout: string): string[] {
+  return resolveFlutter(config.flutter, projectFiles(checkout));
+}
 
-let flutterVersion: Promise<string> | null = null;
-function getFlutterVersion(cwd: string): Promise<string> {
-  flutterVersion ??= run(FLUTTER_CMD, [...(FLUTTER_CMD === "fvm" ? ["flutter"] : []), "--version", "--machine"], {
-    cwd,
-  })
-    .then(({ stdout }) => JSON.parse(stdout.slice(stdout.indexOf("{"))).frameworkVersion as string)
-    .catch(() => "unknown");
-  return flutterVersion;
+function projectFiles(checkout: string) {
+  return {
+    fvmConfig: existsSync(path.join(checkout, ".fvmrc")) || existsSync(path.join(checkout, ".fvm", "fvm_config.json")),
+    puroConfig: existsSync(path.join(checkout, ".puro.json")),
+  };
+}
+
+
+const installed = new Map<string, Promise<boolean>>();
+function isInstalled(cmd: string): Promise<boolean> {
+  if (path.isAbsolute(cmd)) return Promise.resolve(existsSync(cmd));
+  if (!installed.has(cmd)) installed.set(cmd, run("which", [cmd]).then(() => true, () => false));
+  return installed.get(cmd)!;
+}
+
+const versions = new Map<string, Promise<string>>();
+function getFlutterVersion(command: string[], cwd: string): Promise<string> {
+  const key = `${command.join(" ")}@${cwd}`;
+  if (!versions.has(key)) {
+    versions.set(
+      key,
+      run(command[0], [...command.slice(1), "--version", "--machine"], { cwd, timeout: 60_000 })
+        .then(({ stdout }) => JSON.parse(stdout.slice(stdout.indexOf("{"))).frameworkVersion as string)
+        .catch(() => "unknown"),
+    );
+  }
+  return versions.get(key)!;
 }
 
 // --------------------------------------------------------------------- jobs
@@ -133,6 +153,8 @@ interface Job {
   platform: PlannedBuild["platform"];
   flavor: PlannedBuild["flavor"];
   mode: PlannedBuild["mode"];
+  nativeFlavor?: string | null; // missing on builds recorded before environments could skip --flavor
+  pubGet?: string[] | null; // run once per checkout before the build; null when the config turns it off
   artifact: PlannedBuild["artifact"];
   command: string;
   notes: string[];
@@ -198,14 +220,10 @@ function pump() {
   }
 }
 
-function flutterArgv(argv: string[]) {
-  return FLUTTER_CMD === "fvm" ? ["fvm", ...argv] : argv;
-}
-
 /** Runs one step of a job; its process is the one Cancel stops. */
 async function step(slot: { job: Job; child: ChildProcess | null }, argv: string[]): Promise<number | null> {
   const job = slot.job;
-  const [cmd, ...args] = flutterArgv(argv);
+  const [cmd, ...args] = argv;
   await log(job, `$ ${[cmd, ...args].join(" ")}\n`);
   // detached: its own process group, so Cancel can stop xcodebuild/gradle too.
   const child = spawn(cmd, args, { cwd: job.checkout, detached: true });
@@ -246,7 +264,11 @@ async function pubGet(slot: { job: Job; child: ChildProcess | null }): Promise<n
       await log(slot.job, "Dependencies already resolved for this checkout; skipping pub get.\n\n");
       return 0;
     }
-    const code = await step(slot, ["flutter", "pub", "get"]);
+    if (!slot.job.pubGet) {
+      await log(slot.job, "pub get is turned off in this app's commands (commands.pubGet is null).\n\n");
+      return 0;
+    }
+    const code = await step(slot, slot.job.pubGet);
     if (code === 0) pubDone.set(checkout, await pubspecState(checkout));
     return code;
   } finally {
@@ -270,7 +292,7 @@ async function runJob(job: Job) {
     const pub = await pubGet(slot);
     let code: number | null = pub;
     if ((job.status as Status) !== "cancelled" && pub === 0) {
-      code = await step(slot, [...argvs.get(job.id)!, "--no-pub"]);
+      code = await step(slot, argvs.get(job.id)!);
     }
     job.exitCode = code;
 
@@ -324,7 +346,15 @@ function cancel(job: Job) {
 /** Copies the artifact (and symbols) out of build/ before the next build overwrites them, then reads back what was actually built. */
 async function collect(job: Job) {
   if (job.artifact === "xcode") return prepareXcode(job);
-  let src = path.join(job.checkout, artifactPath(job));
+  let src = path.join(job.checkout, artifactPath({ ...job, nativeFlavor: job.nativeFlavor === undefined ? job.flavor : job.nativeFlavor }));
+  if (job.artifact === "apk" && !existsSync(src)) {
+    // Gradle names APKs after the flavor as declared; if the guess is off, take the newest one.
+    const dir = path.dirname(src);
+    const apks = (await readdir(dir).catch(() => [] as string[])).filter((f) => f.endsWith(".apk"));
+    const times = await Promise.all(apks.map(async (f) => ({ f, t: (await stat(path.join(dir, f))).mtimeMs })));
+    const newest = times.sort((a, b) => b.t - a.t)[0];
+    if (newest && newest.t >= (job.startedAt ?? 0)) src = path.join(dir, newest.f);
+  }
   if (job.artifact === "ipa") {
     const ipas = (await readdir(src)).filter((f) => f.endsWith(".ipa"));
     if (ipas.length === 0) throw new Error(`no .ipa in ${src}`);
@@ -481,14 +511,23 @@ async function plan(body: unknown) {
   const checkout = await resolveCheckout(project, (body as Record<string, unknown>).checkout);
   if (!checkout) return { error: `checkout is not a worktree of ${project.name}` };
   const info = await describe(checkout);
+  const flutter = flutterFor(project.config, checkout);
   const builds: PlannedBuild[] = [];
   const skipped: SkippedBuild[] = [];
   for (const t of parsed.targets) {
-    const r = planBuild(t, parsed.options, info.sha, project.config);
+    const r = planBuild(t, parsed.options, info.sha, project.config, flutter);
     if ("build" in r) builds.push(r.build);
     else skipped.push(r.skipped);
   }
-  return { project: { id: project.id, name: project.name }, checkout: info, builds, skipped };
+  const pubGetTemplate = (project.config.commands ?? generateCommands(project.config)).pubGet;
+  const pubGet = pubGetTemplate ? tokenize(pubGetTemplate).flatMap((t) => (t === "{flutter}" ? flutter : [t])) : null;
+  // Every program the commands start must be installed, or nothing is queued.
+  for (const exe of new Set([...builds.map((b) => b.argv[0]), ...(pubGet ? [pubGet[0]] : [])])) {
+    if (!(await isInstalled(exe))) {
+      return { error: `${exe} isn't installed or isn't on PATH (${project.name}'s commands start with it; see "flutter" and "commands" in its config)` };
+    }
+  }
+  return { project: { id: project.id, name: project.name }, pubGet, checkout: info, builds, skipped };
 }
 
 // --------------------------------------------------------------------- http
@@ -525,8 +564,8 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
     return send(res, 200, {
       project: { id: project.id, name: project.name, root: project.root },
       checkouts: list,
-      flutter: await getFlutterVersion(list[0]?.path ?? project.root),
-      cli: FLUTTER_CMD,
+      flutter: project.config ? await getFlutterVersion(flutterFor(project.config, list[0]?.path ?? project.root), list[0]?.path ?? project.root) : "unknown",
+      cli: project.config ? flutterFor(project.config, list[0]?.path ?? project.root).join(" ") : "",
       config: project.configFile,
       configSource: project.source,
       configError: project.error ?? null,
@@ -576,6 +615,25 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
     } catch (e) {
       return send(res, 400, { error: (e as Error).message });
     }
+  }
+
+  // "Write out commands": the config with its build commands as editable text,
+  // generated from its fields (exactly what fledge runs today), and the fields
+  // that now live inside the commands removed.
+  const writeOut = /^\/api\/projects\/([a-z0-9-]+)\/commands$/.exec(url.pathname);
+  if (writeOut && req.method === "POST") {
+    if (!(await getProject(writeOut[1]))) return send(res, 404, { error: "unknown app" });
+    const raw = (await readJson(req)) as { config?: unknown };
+    let config: FledgeConfig;
+    try {
+      config = parseConfig(raw.config);
+    } catch (e) {
+      return send(res, 400, { error: (e as Error).message });
+    }
+    const out = { ...(raw.config as Record<string, unknown>) };
+    for (const k of ["flavorDefine", "gitShaDefine", "defines", "defineFiles", "args"]) delete out[k];
+    out.commands = config.commands ?? generateCommands(config);
+    return send(res, 200, { config: out });
   }
 
   const projectRoute = /^\/api\/projects\/([a-z0-9-]+)(\/config)?$/.exec(url.pathname);
@@ -699,7 +757,9 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
         flavor: b.flavor,
         mode: b.mode,
         artifact: b.artifact,
-        command: (FLUTTER_CMD === "fvm" ? ["fvm", ...b.argv] : b.argv).join(" "),
+        command: b.argv.join(" "), // exactly what runs
+        pubGet: p.pubGet,
+        nativeFlavor: b.nativeFlavor,
         notes: b.notes,
         status: "queued",
         createdAt: Date.now(),

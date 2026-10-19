@@ -2,7 +2,7 @@ import {
   Alert02Icon,
   AndroidIcon,
   AppleIcon,
-  Copy01Icon,
+
   InformationCircleIcon,
   Layers01Icon,
   PlayIcon,
@@ -444,7 +444,6 @@ export function BuildForm({ projectId, checkout }: { projectId: string; checkout
 }
 
 function PlanPreview({ plan, error }: { plan: PlanResult | null; error: string | null }) {
-  const [copied, setCopied] = useState<number | null>(null);
   const flavorLabel = useFlavorLabel();
   if (error) return <p className="text-sm text-destructive">{error}</p>;
   if (!plan || (!plan.builds.length && !plan.skipped.length))
@@ -457,7 +456,7 @@ function PlanPreview({ plan, error }: { plan: PlanResult | null; error: string |
       </Label>
       <ul className="space-y-1">
         {plan.builds.map((b, i) => (
-          <li key={i} className="group flex items-center gap-2 rounded-md px-2 py-1 text-sm hover:bg-muted">
+          <li key={i} className="flex items-center gap-2 rounded-md px-2 py-1 text-sm hover:bg-muted">
             <HugeiconsIcon icon={PLATFORM_ICON[b.platform]} className="size-4 shrink-0 text-muted-foreground" />
             <span className="font-medium">{flavorLabel(b.flavor)}</span>
             <span className="text-muted-foreground">{MODE_LABEL[b.mode]}</span>
@@ -472,26 +471,6 @@ function PlanPreview({ plan, error }: { plan: PlanResult | null; error: string |
                 <TooltipContent className="max-w-64">{b.notes.join(" · ")}</TooltipContent>
               </Tooltip>
             )}
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="ml-auto size-6 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-                  aria-label="Copy command"
-                  onClick={() => {
-                    void navigator.clipboard.writeText(`fvm ${b.argv.join(" ")}`);
-                    setCopied(i);
-                    setTimeout(() => setCopied(null), 1200);
-                  }}
-                >
-                  <HugeiconsIcon icon={Copy01Icon} className="size-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent className="max-w-96 font-mono text-[11px] break-all">
-                {copied === i ? "Copied" : `fvm ${b.argv.join(" ")}`}
-              </TooltipContent>
-            </Tooltip>
           </li>
         ))}
         {plan.skipped.map((s, i) => (

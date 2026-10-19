@@ -64,6 +64,20 @@ export function ConfigDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, app.id]);
 
+  const [writing, setWriting] = useState(false);
+  async function writeOut() {
+    setWriting(true);
+    setError(null);
+    try {
+      const r = await projectsApi.writeCommands(app.id, JSON.parse(text));
+      setText(JSON.stringify(r.config, null, 2));
+    } catch (e) {
+      setError(e instanceof SyntaxError ? `Not valid JSON: ${e.message}` : (e as Error).message);
+    } finally {
+      setWriting(false);
+    }
+  }
+
   async function save() {
     setSaving(true);
     setError(null);
@@ -135,6 +149,8 @@ export function ConfigDialog({
         />
         {error && <p className="text-sm whitespace-pre-wrap text-destructive">{error}</p>}
 
+        <CommandsHelp hasCommands={/"commands"\s*:/.test(text)} onWriteOut={() => void writeOut()} busy={writing} />
+
         <DialogFooter className="sm:justify-between">
           <div className="flex gap-2">
             <Button variant="ghost" className="text-destructive hover:text-destructive" onClick={() => void remove()}>
@@ -152,5 +168,39 @@ export function ConfigDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** Under the editor: how commands work, and a way to write them out for editing. */
+function CommandsHelp({ hasCommands, onWriteOut, busy }: { hasCommands: boolean; onWriteOut: () => void; busy: boolean }) {
+  return (
+    <div className="space-y-2 rounded-lg border bg-muted/40 p-3 text-xs leading-relaxed">
+      {hasCommands ? (
+        <p>
+          <span className="font-medium">Build commands</span> are under <code className="font-mono">"commands"</code>: one
+          line per output, run exactly as written (split on spaces, no shell). Edit them like terminal commands.
+        </p>
+      ) : (
+        <div className="flex items-start justify-between gap-3">
+          <p>
+            This config has no <code className="font-mono">"commands"</code> yet, so fledge builds the commands from the
+            settings above. Write them out to see and edit the exact commands.
+          </p>
+          <Button size="sm" variant="outline" className="shrink-0" onClick={onWriteOut} disabled={busy}>
+            {busy ? "Writing…" : "Write out commands"}
+          </Button>
+        </div>
+      )}
+      <p className="text-muted-foreground">
+        Filled in per build: <code className="font-mono">{"{mode}"}</code> <code className="font-mono">{"{env}"}</code>{" "}
+        <code className="font-mono">{"{flavor}"}</code> <code className="font-mono">{"{target}"}</code>{" "}
+        <code className="font-mono">{"{sha}"}</code> <code className="font-mono">{"{exportMethod}"}</code>, and each
+        environment's <code className="font-mono">vars</code>. Whole words that can expand to several arguments:{" "}
+        <code className="font-mono">{"{flutter}"}</code> (e.g. fvm flutter), <code className="font-mono">{"{options}"}</code>{" "}
+        (the switches ticked in the form), <code className="font-mono">{"{version}"}</code>,{" "}
+        <code className="font-mono">{"{flavorArgs}"}</code> <code className="font-mono">{"{targetArgs}"}</code>{" "}
+        <code className="font-mono">{"{envDefines}"}</code> <code className="font-mono">{"{envDefineFiles}"}</code>.
+      </p>
+    </div>
   );
 }

@@ -6,8 +6,18 @@
 
 import path from "node:path";
 
+/**
+ * One environment the app is built for. Usually a native flavor (`flavor`,
+ * which defaults to `name`), but apps without flavors set `flavor: null` and
+ * tell environments apart by entry file (`target`) and/or defines.
+ */
 export interface FlavorConfig {
-  name: string; // the --flavor value
+  name: string; // fledge's id for it; also the {flavor} in symbolsDir and the value of flavorDefine
+  flavor: string | null; // --flavor value, or null to build without one
+  target?: string; // -t entry file, e.g. lib/main_staging.dart
+  defines: Record<string, string>; // --dart-define for this environment only
+  defineFiles: string[]; // --dart-define-from-file for this environment only
+  vars: Record<string, string>; // this environment's values for {NAME} placeholders in commands
   label: string;
   androidId?: string; // applicationId, used when it can't be read back from the APK
   iosId?: string; // bundle identifier
@@ -32,13 +42,28 @@ export interface ReleaseConfig {
   team: Record<string, string>; // GitHub login → name used in notes
 }
 
+/** Extra flags passed through unchanged (e.g. --no-tree-shake-icons). */
+export interface ExtraArgs {
+  all: string[];
+  android: string[];
+  ios: string[];
+}
+
 export interface FledgeConfig {
+  // The command that runs Flutter, e.g. ["fvm", "flutter"]; "auto" picks per
+  // checkout (fvm with .fvmrc, puro with .puro.json, else flutter).
+  flutter: "auto" | string[];
   flavors: FlavorConfig[];
   flavorDefine: string | null; // --dart-define=<this>=<flavor>; null to not pass one
   gitShaDefine: string | null;
   defines: Record<string, string>; // added to every build
+  defineFiles: string[]; // --dart-define-from-file for every build
+  args: ExtraArgs;
   symbolsDir: string; // relative; {flavor} and {platform} are filled in
   toggles: ToggleConfig[];
+  // The build commands as text (see templates.ts). null: generated from the
+  // fields above, which is also what "Write out commands" puts here.
+  commands: CommandTemplates | null;
   release: ReleaseConfig | null;
 }
 
@@ -60,6 +85,11 @@ export const DEFAULT_PR_BODY = [
   "Opened by fledge.",
 ];
 
+const FLUTTER_ALIASES: Record<string, string[]> = { flutter: ["flutter"], fvm: ["fvm", "flutter"], puro: ["puro", "flutter"] };
+const COMMAND_PART = /^[A-Za-z0-9_.\/@:+-]+$/;
+const ARG = /^--?[A-Za-z][A-Za-z0-9-]*(=[A-Za-z0-9_.,:\/@+-]*)?$/;
+const REL_PATH = /^[A-Za-z0-9_.\/-]+$/;
+
 class ConfigError extends Error {}
 
 function fail(where: string, msg: string): never {
@@ -74,6 +104,52 @@ function str(v: unknown, where: string, re?: RegExp): string {
 
 function optStr(v: unknown, where: string, re?: RegExp): string | undefined {
   return v === undefined ? undefined : str(v, where, re);
+}
+
+/** A path inside the app (no absolute paths, no ".."). */
+function relPath(v: unknown, where: string): string {
+  const p = str(v, where);
+  if (path.isAbsolute(p) || p.split("/").includes("..") || !REL_PATH.test(p)) fail(where, `"${p}" must be a plain relative path inside the app`);
+  return p;
+}
+
+function pathList(v: unknown, where: string): string[] {
+  if (v === undefined) return [];
+  if (!Array.isArray(v)) fail(where, "must be an array of paths");
+  return v.map((x, i) => relPath(x, `${where}[${i}]`));
+}
+
+function defineMap(v: unknown, where: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (v === undefined) return out;
+  if (typeof v !== "object" || v === null || Array.isArray(v)) fail(where, "must be an object of NAME: value");
+  for (const [k, val] of Object.entries(v)) {
+    defineEntry(k, val, where);
+    out[k] = val as string;
+  }
+  return out;
+}
+
+function argList(v: unknown, where: string): string[] {
+  if (v === undefined) return [];
+  if (!Array.isArray(v)) fail(where, "must be an array of flags");
+  return v.map((a, i) => {
+    if (typeof a !== "string" || !ARG.test(a)) fail(`${where}[${i}]`, `"${String(a)}" isn't allowed; use flags like --no-tree-shake-icons or --flag=value`);
+    return a;
+  });
+}
+
+function parseFlutter(v: unknown): FledgeConfig["flutter"] {
+  if (v === undefined || v === "auto") return "auto";
+  if (typeof v === "string") {
+    const alias = FLUTTER_ALIASES[v];
+    if (!alias) fail("flutter", `"${v}" — use "auto", "flutter", "fvm", "puro", or a command like ["fvm", "flutter"]`);
+    return alias;
+  }
+  if (!Array.isArray(v) || v.length === 0 || v.some((x) => typeof x !== "string" || !COMMAND_PART.test(x))) {
+    fail("flutter", 'must be "auto", "flutter", "fvm", "puro", or an array like ["fvm", "flutter"]');
+  }
+  return v as string[];
 }
 
 function defineEntry(key: string, value: unknown, where: string) {
@@ -92,26 +168,29 @@ export function parseConfig(raw: unknown): FledgeConfig {
     const w = `flavors[${i}]`;
     const o = (f ?? {}) as Record<string, unknown>;
     const name = str(o.name, `${w}.name`, NAME);
+    const flavor = o.flavor === null ? null : (optStr(o.flavor, `${w}.flavor`, /^[A-Za-z][A-Za-z0-9_]*$/) ?? name);
     return {
       name,
+      flavor,
+      target: o.target === undefined ? undefined : relPath(o.target, `${w}.target`),
+      defines: defineMap(o.defines, `${w}.defines`),
+      defineFiles: pathList(o.defineFiles, `${w}.defineFiles`),
+      vars: varMap(o.vars, `${w}.vars`),
       label: optStr(o.label, `${w}.label`) ?? name.charAt(0).toUpperCase() + name.slice(1),
       androidId: optStr(o.androidId, `${w}.androidId`, APP_ID),
       iosId: optStr(o.iosId, `${w}.iosId`, APP_ID),
-      xcodeScheme: optStr(o.xcodeScheme, `${w}.xcodeScheme`, SCHEME) ?? name.charAt(0).toUpperCase() + name.slice(1),
+      // Without a native flavor there's one scheme, Runner.
+      xcodeScheme:
+        optStr(o.xcodeScheme, `${w}.xcodeScheme`, SCHEME) ?? (flavor ? flavor.charAt(0).toUpperCase() + flavor.slice(1) : "Runner"),
       confirm: o.confirm === true,
     };
   });
   const names = flavors.map((f) => f.name);
   if (new Set(names).size !== names.length) fail("flavors", "names must be unique");
 
-  const defines: Record<string, string> = {};
-  if (r.defines !== undefined) {
-    if (typeof r.defines !== "object" || r.defines === null) fail("defines", "must be an object of NAME: value");
-    for (const [k, v] of Object.entries(r.defines)) {
-      defineEntry(k, v, "defines");
-      defines[k] = v as string;
-    }
-  }
+  const defines = defineMap(r.defines, "defines");
+  const a = (r.args ?? {}) as Record<string, unknown>;
+  if (typeof a !== "object" || Array.isArray(a)) fail("args", "must be an object with all/android/ios arrays");
 
   const toggles = ((r.toggles as unknown[] | undefined) ?? []).map((t, i): ToggleConfig => {
     const w = `toggles[${i}]`;
@@ -138,13 +217,59 @@ export function parseConfig(raw: unknown): FledgeConfig {
   }
 
   return {
+    flutter: parseFlutter(r.flutter),
     flavors,
     flavorDefine: r.flavorDefine === null ? null : (optStr(r.flavorDefine, "flavorDefine", DEFINE_KEY) ?? "FLAVOR"),
     gitShaDefine: r.gitShaDefine === null ? null : (optStr(r.gitShaDefine, "gitShaDefine", DEFINE_KEY) ?? "GIT_SHA"),
     defines,
+    defineFiles: pathList(r.defineFiles, "defineFiles"),
+    args: { all: argList(a.all, "args.all"), android: argList(a.android, "args.android"), ios: argList(a.ios, "args.ios") },
     symbolsDir,
     toggles,
+    commands: r.commands === undefined || r.commands === null ? null : parseCommands(r.commands, flavors),
     release: r.release === undefined ? null : parseRelease(r.release),
+  };
+}
+
+function varMap(v: unknown, where: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (v === undefined) return out;
+  if (typeof v !== "object" || v === null || Array.isArray(v)) fail(where, "must be an object of NAME: value");
+  for (const [k, val] of Object.entries(v)) {
+    if (!DEFINE_KEY.test(k)) fail(where, `"${k}" isn't a valid placeholder name`);
+    if ((INLINE as readonly string[]).includes(k) || (WHOLE as readonly string[]).includes(k)) fail(where, `"${k}" is one of fledge's own placeholders`);
+    if (typeof val !== "string" || !/^[^\s\u0000-\u001f]*$/.test(val)) fail(`${where}.${k}`, "must be a string without spaces");
+    out[k] = val;
+  }
+  return out;
+}
+
+function parseCommands(raw: unknown, flavors: FlavorConfig[]): CommandTemplates {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) fail("commands", "must be an object");
+  const r = raw as Record<string, unknown>;
+  const check = (v: unknown, where: string, allowed?: readonly string[]): string | undefined => {
+    if (v === undefined) return undefined;
+    if (typeof v !== "string") fail(where, "must be a command line (a string)");
+    if (v.length > 4000) fail(where, "is too long");
+    const problems = templateProblems(v, flavors, allowed);
+    if (problems.length) fail(where, problems.join("; "));
+    return v;
+  };
+  const section = (name: "android" | "ios", outputs: readonly string[]) => {
+    const o = r[name];
+    if (o === undefined) return {};
+    if (typeof o !== "object" || o === null || Array.isArray(o)) fail(`commands.${name}`, "must be an object");
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(o)) {
+      if (!outputs.includes(k)) fail(`commands.${name}.${k}`, `unknown output; use ${outputs.join(", ")}`);
+      out[k] = check(v, `commands.${name}.${k}`)!;
+    }
+    return out;
+  };
+  return {
+    pubGet: r.pubGet === null ? null : (check(r.pubGet, "commands.pubGet", ["flutter"]) ?? "{flutter} pub get"),
+    android: section("android", ["apk", "appbundle"]),
+    ios: section("ios", ["ipa", "app", "xcode"]),
   };
 }
 
@@ -193,6 +318,7 @@ function parseRelease(raw: unknown): ReleaseConfig {
 }
 
 export { fill } from "./template.ts";
+import { INLINE, templateProblems, WHOLE, type CommandTemplates } from "./templates.ts";
 
 export function flavorOf(cfg: FledgeConfig, name: string): FlavorConfig | undefined {
   return cfg.flavors.find((f) => f.name === name);

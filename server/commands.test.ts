@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { artifactPath, parseRequest, planBuild, type BuildOptions } from "./commands.ts";
+import { artifactPath, parseRequest, planBuild, resolveFlutter, type BuildOptions } from "./commands.ts";
 import { parseConfig } from "./config.ts";
 
 const cfg = parseConfig({
@@ -97,11 +97,11 @@ test("parseRequest rejects anything outside the config and bad versions", () => 
 
 test("artifact paths match Flutter 3.24's output layout", () => {
   assert.equal(
-    artifactPath({ platform: "android", flavor: "staging", mode: "release", artifact: "apk" }),
+    artifactPath({ platform: "android", nativeFlavor: "staging", mode: "release", artifact: "apk" }),
     "build/app/outputs/flutter-apk/app-staging-release.apk",
   );
   assert.equal(
-    artifactPath({ platform: "android", flavor: "dev", mode: "profile", artifact: "appbundle" }),
+    artifactPath({ platform: "android", nativeFlavor: "dev", mode: "profile", artifact: "appbundle" }),
     "build/app/outputs/bundle/devProfile/app-dev-profile.aab",
   );
 });
@@ -131,4 +131,71 @@ test("arm64 only is Android-only and off unless asked", () => {
 test("parseRequest leaves arm64 only and toggles off by default", () => {
   const r = parseRequest({ targets: [{ platform: "android", flavor: "dev", mode: "release" }] }, cfg);
   assert.ok("options" in r && r.options.arm64Only === false && r.options.toggles.length === 0);
+});
+
+test("apps without native flavors: entry file, per-environment defines and define files", () => {
+  const c = parseConfig({
+    flavors: [
+      { name: "dev", flavor: null, target: "lib/main_dev.dart", defines: { API: "https://dev.example.com" }, defineFiles: ["config/dev.json"] },
+    ],
+    flavorDefine: null,
+    gitShaDefine: null,
+    defineFiles: ["config/common.json"],
+    args: { all: ["--no-tree-shake-icons"], android: ["--android-skip-build-dependency-validation"] },
+  });
+  const b = plan({ platform: "android", flavor: "dev", mode: "release" }, {}, c);
+  assert.deepEqual(b.argv, [
+    "flutter", "build", "apk", "--release",
+    "-t", "lib/main_dev.dart",
+    "--dart-define=API=https://dev.example.com",
+    "--dart-define-from-file=config/common.json",
+    "--dart-define-from-file=config/dev.json",
+    "--no-tree-shake-icons",
+    "--android-skip-build-dependency-validation",
+    "--no-pub",
+  ]);
+  assert.equal(b.nativeFlavor, null);
+  assert.ok(!plan({ platform: "ios", flavor: "dev", mode: "release" }, {}, c).argv.includes("--android-skip-build-dependency-validation"));
+});
+
+test("an environment can build a native flavor with a different name", () => {
+  const c = parseConfig({ flavors: [{ name: "prod", flavor: "production" }] });
+  const b = plan({ platform: "android", flavor: "prod", mode: "release" }, {}, c);
+  assert.deepEqual(b.argv.slice(4, 7), ["--flavor", "production", "--dart-define=FLAVOR=prod"]);
+  assert.equal(artifactPath(b), "build/app/outputs/flutter-apk/app-production-release.apk");
+});
+
+test("artifact paths without a flavor", () => {
+  assert.equal(artifactPath({ platform: "android", nativeFlavor: null, mode: "release", artifact: "apk" }), "build/app/outputs/flutter-apk/app-release.apk");
+  assert.equal(artifactPath({ platform: "android", nativeFlavor: null, mode: "release", artifact: "appbundle" }), "build/app/outputs/bundle/release/app-release.aab");
+});
+
+test("the Flutter command follows the setting, or the project's files on auto", () => {
+  const none = { fvmConfig: false, puroConfig: false };
+  assert.deepEqual(resolveFlutter("auto", none), ["flutter"]);
+  assert.deepEqual(resolveFlutter("auto", { ...none, fvmConfig: true }), ["fvm", "flutter"]);
+  assert.deepEqual(resolveFlutter("auto", { ...none, puroConfig: true }), ["puro", "flutter"]);
+  assert.deepEqual(resolveFlutter(["flutter"], { ...none, fvmConfig: true }), ["flutter"]);
+});
+
+test("written-out commands run exactly as written, with placeholders filled in", () => {
+  const c = parseConfig({
+    flavors: [{ name: "dev", flavor: null, vars: { API_URL: "https://dev.example.com" } }],
+    commands: {
+      pubGet: null,
+      android: { apk: "./scripts/build.sh apk {env} --{mode} --dart-define=API_URL={API_URL} {options} {version}" },
+    },
+  });
+  const b = plan({ platform: "android", flavor: "dev", mode: "profile" }, { splitDebugInfo: true, buildNumber: "9" }, c);
+  assert.deepEqual(b.argv, [
+    "./scripts/build.sh", "apk", "dev", "--profile", "--dart-define=API_URL=https://dev.example.com",
+    "--split-debug-info=build/symbols/dev/android", "--build-number=9",
+  ]);
+  const r = planBuild({ platform: "ios", flavor: "dev", mode: "release" }, { ...base, iosArtifact: "app" }, "abc", c);
+  assert.ok("skipped" in r && /commands\.ios\.app/.test(r.skipped.reason));
+});
+
+test("{flutter} expands to the app's Flutter command", () => {
+  const b = planBuild({ platform: "android", flavor: "staging", mode: "debug" }, base, "abc", cfg, ["fvm", "flutter"]);
+  assert.ok("build" in b && b.build.argv[0] === "fvm" && b.build.argv[1] === "flutter" && b.build.argv[2] === "build");
 });

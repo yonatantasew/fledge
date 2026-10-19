@@ -63,6 +63,7 @@ export interface Device {
 }
 
 export interface PlanResult {
+  pubGet?: string[] | null;
   checkout: Checkout;
   builds: PlannedBuild[];
   skipped: SkippedBuild[];
@@ -294,6 +295,7 @@ export const projectsApi = {
   remove: (id: string) => send<{ ok: true }>("DELETE", `/api/projects/${id}`),
   config: (id: string) => send<ConfigFile>("GET", `/api/projects/${id}/config`),
   saveConfig: (id: string, config: unknown) => send<{ file: string }>("PUT", `/api/projects/${id}/config`, { config }),
+  writeCommands: (id: string, config: unknown) => post<{ config: Record<string, unknown> }>(`/api/projects/${id}/commands`, { config }),
 };
 
 /** Lines the server streams while a release is being published. */

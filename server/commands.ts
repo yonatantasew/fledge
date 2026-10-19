@@ -1,11 +1,13 @@
-// Turns a build selection from the UI into the exact `fvm flutter build` argv.
+// Turns a build selection from the UI into the exact command line to run: the
+// app's command template for that output (templates.ts), filled in with the
+// environment, build type and the options ticked in the form.
 //
-// Everything the server executes is assembled here from closed enums, values
-// checked against the app's fledge.json (flavors, toggles) and two regex-checked
-// strings — nothing from the request reaches a shell, and argv is passed to
-// spawn() without one. Kept pure so the flag rules are unit-tested.
+// Request values are closed enums, names checked against the config, and two
+// regex-checked strings; the result is passed to spawn() as argv, never to a
+// shell. Kept pure so the rules are unit-tested.
 
 import { fill, type FledgeConfig } from "./config.ts";
+import { expand, generateCommands } from "./templates.ts";
 
 export const PLATFORMS = ["android", "ios"] as const;
 export const ARM64_ONLY_FLAG = "android-arm64";
@@ -43,8 +45,9 @@ export interface Target {
 }
 
 export interface PlannedBuild extends Target {
+  nativeFlavor: string | null; // the --flavor actually passed (null: none)
   artifact: AndroidArtifact | IosArtifact;
-  argv: string[];
+  argv: string[]; // the complete command line, executable first
   symbolsDir: string | null;
   notes: string[];
 }
@@ -108,74 +111,68 @@ export function planBuild(
   o: BuildOptions,
   gitSha: string,
   cfg: FledgeConfig,
+  flutter: string[] = ["flutter"],
 ): { build: PlannedBuild } | { skipped: SkippedBuild } {
   const artifact = t.platform === "android" ? o.androidArtifact : o.iosArtifact;
   const notes: string[] = [];
+  const env = cfg.flavors.find((f) => f.name === t.flavor);
+  if (!env) return { skipped: { ...t, reason: `no environment "${t.flavor}" in the config` } };
 
   // `flutter build ipa` has no debug archive: Xcode cannot export one.
   if (t.platform === "ios" && artifact === "ipa" && t.mode === "debug") {
     return { skipped: { ...t, reason: "an IPA can't be exported from a debug build — choose .app for debug" } };
   }
 
-  const sub = t.platform === "android" ? artifact : artifact === "ipa" ? "ipa" : "ios";
-  const configOnly = artifact === "xcode";
-  const argv = [
-    "flutter",
-    "build",
-    sub,
-    `--${t.mode}`,
-    "--flavor",
-    t.flavor,
-    // --flavor picks the native flavor; apps that read the flavor in Dart need
-    // it as a define too, and the two must never disagree. Always pass both.
-    ...(cfg.flavorDefine ? [`--dart-define=${cfg.flavorDefine}=${t.flavor}`] : []),
-    ...(cfg.gitShaDefine ? [`--dart-define=${cfg.gitShaDefine}=${gitSha}`] : []),
-    ...Object.entries(cfg.defines).map(([k, v]) => `--dart-define=${k}=${v}`),
-  ];
-  if (configOnly) argv.splice(3, 0, "--config-only");
+  const templates = cfg.commands ?? generateCommands(cfg);
+  const template = (templates[t.platform] as Record<string, string | undefined>)[artifact];
+  if (!template) return { skipped: { ...t, reason: `the config has no commands.${t.platform}.${artifact}` } };
 
+  // {options}: the switches ticked in the form.
+  const options: string[] = [];
   let symbolsDir: string | null = null;
-  if (configOnly) {
+  if (artifact === "xcode") {
     // Nothing is compiled, so there are no symbols; Xcode's archive makes them.
   } else if (o.splitDebugInfo && t.mode !== "debug") {
     symbolsDir = fill(cfg.symbolsDir, { flavor: t.flavor, platform: t.platform });
-    argv.push(`--split-debug-info=${symbolsDir}`);
-    if (o.obfuscate) argv.push("--obfuscate");
+    options.push(`--split-debug-info=${symbolsDir}`);
+    if (o.obfuscate) options.push("--obfuscate");
   } else if (o.splitDebugInfo) {
     notes.push("split debug info skipped: debug builds keep their symbols");
   }
-
   for (const toggle of cfg.toggles) {
     if (!o.toggles.includes(toggle.id)) continue;
     if (toggle.skipFlavors.includes(t.flavor)) notes.push(`${toggle.label} skipped: not used for ${t.flavor}`);
-    else argv.push(`--dart-define=${toggle.define}`);
+    else options.push(`--dart-define=${toggle.define}`);
   }
-
   if (o.arm64Only && t.platform === "android") {
     // Only Flutter's own libraries are filtered: plugin native code for the
     // other ABIs stays in the APK, so a 32-bit-only phone would install it and
     // crash on launch. fledge's Install refuses such phones for this build.
-    argv.push("--target-platform", "android-arm64");
+    options.push("--target-platform", "android-arm64");
     if (t.mode === "debug") notes.push("arm64 only barely helps debug builds: Dart isn't ahead-of-time compiled in debug");
   }
 
-  if (sub === "ipa") argv.push(`--export-method=${o.exportMethod}`);
-  if (o.buildName) argv.push(`--build-name=${o.buildName}`);
-  if (o.buildNumber) argv.push(`--build-number=${o.buildNumber}`);
+  // {version}: the build name/number overrides from the form.
+  const version = [
+    ...(o.buildName ? [`--build-name=${o.buildName}`] : []),
+    ...(o.buildNumber ? [`--build-number=${o.buildNumber}`] : []),
+  ];
 
-  return { build: { ...t, artifact, argv, symbolsDir, notes } };
+  const argv = expand(template, { flutter, mode: t.mode, env, sha: gitSha, exportMethod: o.exportMethod, options, version });
+  return { build: { ...t, nativeFlavor: env.flavor, artifact, argv, symbolsDir, notes } };
 }
 
 /** Where `flutter build` leaves the artifact, relative to the checkout. */
 export const XCARCHIVE_PATH = "build/ios/archive/Runner.xcarchive"; // written by `flutter build ipa` (3.24)
 
-export function artifactPath(b: Pick<PlannedBuild, "platform" | "flavor" | "mode" | "artifact">): string {
+export function artifactPath(b: Pick<PlannedBuild, "platform" | "nativeFlavor" | "mode" | "artifact">): string {
   const Mode = b.mode[0].toUpperCase() + b.mode.slice(1);
+  const f = b.nativeFlavor;
   switch (b.artifact) {
     case "apk":
-      return `build/app/outputs/flutter-apk/app-${b.flavor}-${b.mode}.apk`;
+      return f ? `build/app/outputs/flutter-apk/app-${f}-${b.mode}.apk` : `build/app/outputs/flutter-apk/app-${b.mode}.apk`;
     case "appbundle":
-      return `build/app/outputs/bundle/${b.flavor}${Mode}/app-${b.flavor}-${b.mode}.aab`;
+      return f ? `build/app/outputs/bundle/${f}${Mode}/app-${f}-${b.mode}.aab` : `build/app/outputs/bundle/${b.mode}/app-${b.mode}.aab`;
     case "ipa":
       return "build/ios/ipa"; // a directory; the server picks the .ipa inside
     case "app":
@@ -183,4 +180,18 @@ export function artifactPath(b: Pick<PlannedBuild, "platform" | "flavor" | "mode
     case "xcode":
       return "ios/Flutter/Generated.xcconfig";
   }
+}
+
+/**
+ * The command that runs Flutter for a checkout. "auto" follows the files the
+ * project carries: .fvmrc / .fvm (fvm), .puro.json (puro), else plain flutter.
+ */
+export function resolveFlutter(
+  setting: FledgeConfig["flutter"],
+  has: { fvmConfig: boolean; puroConfig: boolean },
+): string[] {
+  if (setting !== "auto") return setting;
+  if (has.fvmConfig) return ["fvm", "flutter"];
+  if (has.puroConfig) return ["puro", "flutter"];
+  return ["flutter"];
 }

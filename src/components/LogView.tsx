@@ -7,6 +7,7 @@ import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle }
 import { cn } from "@/lib/utils";
 import { useFlavorLabel } from "@/project";
 import { MODE_LABEL } from "./BuildForm";
+import { CommandLine } from "./CommandLine";
 
 const TAIL = 3000;
 
@@ -60,6 +61,11 @@ export function LogView({ job, log }: { job: Job | undefined; log: string | unde
           </CardAction>
         )}
       </CardHeader>
+      {job && (
+        <div className="px-3">
+          <CommandLine text={job.command} />
+        </div>
+      )}
       <CardContent className="min-h-0 flex-1 px-3">
         <div
           ref={ref}
