@@ -44,7 +44,16 @@ header, then its checkout. **+** adds an app: pick one of the Flutter apps
 fledge finds in your usual folders, or type its path. fledge then looks at it
 and suggests a config, with a note for everything it found or guessed:
 
-- flavors and application IDs, from `productFlavors` in `android/app/build.gradle(.kts)`
+- environments: native flavors from `productFlavors` in `android/app/build.gradle(.kts)`,
+  else `.vscode/launch.json` run configurations, else `lib/main_<env>.dart`
+  entry files, else the values of an environment define such as
+  `APP_ENVIRONMENT` (from your CI build matrix, or what your Dart code compares
+  it against)
+- each environment's entry file, defines and define files, from a matching
+  `.vscode/launch.json` configuration
+- how Flutter is run (`fvm`, `puro` or plain `flutter`), from `.fvmrc` / `.puro.json`
+- fixed `--dart-define`s from your CI build command, and a note listing the ones
+  CI fills from secrets
 - iOS bundle IDs and schemes, from `project.pbxproj` and the shared Xcode schemes
 - the flavor and commit defines, and on/off switches, from the
   `String.fromEnvironment` / `bool.fromEnvironment` keys your Dart code reads
@@ -73,10 +82,14 @@ Start from [fledge.example.json](fledge.example.json). The fields:
 
 | Field | Meaning |
 |---|---|
-| `flavors[]` | One per `--flavor`. `name` (lowercase), `label`, `androidId` / `iosId` (used when the ID can't be read back from the build), `xcodeScheme` (for Prepare Xcode; defaults to the capitalised name), `confirm` (ask twice before building it, e.g. production). |
-| `flavorDefine` | Passes `--dart-define=<this>=<flavor>` on every build, so Dart code and the native flavor always agree. Default `FLAVOR`; `null` to leave it out. |
+| `flutter` | How Flutter is run: `"auto"` (default: `fvm flutter` if the checkout has `.fvmrc`, `puro flutter` with `.puro.json`, else `flutter`), `"flutter"`, `"fvm"`, `"puro"`, or a command such as `["puro", "-e", "stable", "flutter"]`. |
+| `flavors[]` | The app's environments. `name` (lowercase; what you pick in the UI), `label`, `flavor` (the native `--flavor` it builds; defaults to `name`, `null` for apps without flavors), `target` (entry file, e.g. `lib/main_staging.dart`), `defines` and `defineFiles` (this environment's own `--dart-define`s and `--dart-define-from-file`s), `androidId` / `iosId` (used when the ID can't be read back from the build), `xcodeScheme` (for Prepare Xcode; defaults to the capitalised flavor, or `Runner` without one), `confirm` (ask twice before building it, e.g. production). |
+| `commands` | The build command lines; see [Build commands](#build-commands). When present, the next five fields aren't used. |
+| `flavorDefine` | Passes `--dart-define=<this>=<environment name>` on every build, so Dart code always knows the environment. Default `FLAVOR`; use your app's key (e.g. `APP_ENVIRONMENT`), or `null` to leave it out. |
 | `gitShaDefine` | Passes the checkout's commit as `--dart-define=<this>=<sha>`. Default `GIT_SHA`; `null` to leave it out. |
 | `defines` | Extra `--dart-define`s for every build. |
+| `defineFiles` | `--dart-define-from-file`s for every build (paths inside the app). |
+| `args` | Extra flags passed through as they are: `all`, `android` and `ios` lists, e.g. `{ "all": ["--no-tree-shake-icons"] }`. |
 | `symbolsDir` | Where split debug info goes. Default `build/symbols/{flavor}/{platform}`. |
 | `toggles[]` | On/off switches in the form, each adding one `--dart-define` (e.g. a debug-logging flag). `skipFlavors` lists flavors it's never added to. |
 | `release` | Optional. Without it the Release tab is turned off. |
@@ -87,8 +100,65 @@ Start from [fledge.example.json](fledge.example.json). The fields:
 | `release.jira` | Optional. `site`, and the `fromStatus` → `toStatus` move to make when a release ships. |
 | `release.team` | GitHub login → the name used for "DRI" in the notes. |
 
+## Build commands
+
+The `commands` section is the command line for each build output, run exactly
+as written: split on spaces and started directly, never through a shell, so
+quotes, pipes and `$VARS` mean nothing special. Edit them like terminal
+commands, add flags, or call your own script or `make` target.
+
+```json
+"commands": {
+  "pubGet": "{flutter} pub get",
+  "android": {
+    "apk": "{flutter} build apk --{mode} --flavor {flavor} --dart-define=FLAVOR={env} {options} {version} --no-pub",
+    "appbundle": "…"
+  },
+  "ios": { "ipa": "…", "app": "…", "xcode": "{flutter} build ios --config-only --{mode} --flavor {flavor} --no-pub" }
+}
+```
+
+fledge fills these in for each build:
+
+| Placeholder | Becomes |
+|---|---|
+| `{mode}` | `debug`, `profile` or `release` |
+| `{env}` | the environment's name |
+| `{flavor}`, `{target}` | the environment's native flavor and entry file |
+| `{sha}` | the checkout's commit |
+| `{exportMethod}` | the iOS export method picked in the form |
+| `{NAME}` | the environment's own value from its `vars` |
+| `{flutter}` | the Flutter command (see `flutter`), e.g. `fvm flutter` |
+| `{options}` | the switches ticked in the form: split debug info, obfuscate, toggles, 64-bit ARM only |
+| `{version}` | `--build-name` / `--build-number`, when overridden in the form |
+| `{flavorArgs}`, `{targetArgs}` | `--flavor …` / `-t …`, or nothing for environments without one |
+| `{envDefines}`, `{envDefineFiles}` | the environment's `defines` / `defineFiles` as flags |
+
+The ones from `{flutter}` down are whole words and can expand to several
+arguments (or none). fledge checks every command when it loads the config: a
+placeholder that an environment can't fill, such as `{flavor}` for an
+environment without a flavor, is an error that names the command and the
+environment.
+
+`pubGet` runs once per checkout before its builds, so builds running side by
+side don't both resolve dependencies. That's why the build commands end with
+`--no-pub`. Set `"pubGet": null` to skip it.
+
+**No `commands` yet?** fledge generates them from `flavorDefine`,
+`gitShaDefine`, `defines`, `defineFiles` and `args`, so older configs keep
+working. **Write out commands** in the config dialog puts the generated lines
+into the config for editing, and removes those fields. New apps get their
+commands written out when they're added.
+
+A `fledge.json` committed to a repository can run any program when someone
+builds, just like the repository's `Makefile` or scripts, so treat it the
+same way in review.
+
 ## Builds
 
+- **The exact commands are in the config.** Each build output has its command
+  line under `commands` (see [Build commands](#build-commands)); each finished
+  build shows the command it ran above its log, with a copy button.
 - **Any worktree.** The checkout picker lists every `git worktree` of the
   app's repository, so you can build `main` or a feature branch without
   switching.

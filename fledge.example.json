@@ -1,12 +1,51 @@
 {
+  "flutter": "auto",
   "flavors": [
-    { "name": "dev", "label": "Dev", "androidId": "com.example.myapp.dev", "iosId": "com.example.myapp.dev", "xcodeScheme": "dev" },
-    { "name": "staging", "label": "Staging", "androidId": "com.example.myapp.staging", "iosId": "com.example.myapp.staging", "xcodeScheme": "staging" },
-    { "name": "prod", "label": "Production", "androidId": "com.example.myapp", "iosId": "com.example.myapp", "xcodeScheme": "prod", "confirm": true }
+    {
+      "name": "dev",
+      "label": "Dev",
+      "androidId": "com.example.myapp.dev",
+      "iosId": "com.example.myapp.dev",
+      "xcodeScheme": "dev",
+      "defineFiles": [
+        "config/dev.json"
+      ]
+    },
+    {
+      "name": "staging",
+      "label": "Staging",
+      "androidId": "com.example.myapp.staging",
+      "iosId": "com.example.myapp.staging",
+      "xcodeScheme": "staging",
+      "defineFiles": [
+        "config/staging.json"
+      ]
+    },
+    {
+      "name": "prod",
+      "label": "Production",
+      "flavor": "prod",
+      "target": "lib/main_prod.dart",
+      "androidId": "com.example.myapp",
+      "iosId": "com.example.myapp",
+      "xcodeScheme": "prod",
+      "defineFiles": [
+        "config/prod.json"
+      ],
+      "confirm": true
+    }
   ],
   "flavorDefine": "FLAVOR",
   "gitShaDefine": "GIT_SHA",
-  "defines": { "BUILD_SOURCE": "local" },
+  "defines": {
+    "BUILD_SOURCE": "local"
+  },
+  "defineFiles": [],
+  "args": {
+    "all": [],
+    "android": [],
+    "ios": []
+  },
   "symbolsDir": "build/symbols/{flavor}/{platform}",
   "toggles": [
     {
@@ -14,19 +53,32 @@
       "label": "Verbose logs",
       "hint": "Logs every network request and response.",
       "define": "VERBOSE_LOGS=true",
-      "skipFlavors": ["prod"]
+      "skipFlavors": [
+        "prod"
+      ]
     }
   ],
   "release": {
-    "github": { "repo": "your-org/your-app", "baseBranch": "main" },
+    "github": {
+      "repo": "your-org/your-app",
+      "baseBranch": "main"
+    },
     "channel": "Test builds",
-    "tickets": { "project": "PROJ" },
+    "tickets": {
+      "project": "PROJ"
+    },
     "versionBump": {
       "branch": "release/bump-{versionSlug}",
       "commitMessage": "Bump version to {tag}",
       "prTitle": "Bump version to {tag}"
     },
-    "jira": { "site": "https://your-company.atlassian.net", "fromStatus": "Ready for test", "toStatus": "In Testing" },
-    "team": { "octocat": "Mona" }
+    "jira": {
+      "site": "https://your-company.atlassian.net",
+      "fromStatus": "Ready for test",
+      "toStatus": "In Testing"
+    },
+    "team": {
+      "octocat": "Mona"
+    }
   }
 }
