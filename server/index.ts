@@ -22,6 +22,9 @@ import { generateCommands, tokenize } from "./templates.ts";
 import { cancelLogin, firebaseStatus, onFirebaseChange, startLogin } from "./firebase.ts";
 import { templateGithub, templateSlack, type ReleaseFacts } from "./notes.ts";
 import { connections, draftWithClaude, gatherFacts, publish, releases, validatePublish } from "./release.ts";
+import { getConversation, listConversations, newConversation, send as sendToAssistant } from "./ai/agent.ts";
+import { availableModels, listProviders, removeProvider, saveProvider, setActive } from "./ai/providers.ts";
+import type { ToolContext } from "./ai/tools.ts";
 import { startable } from "./scheduler.ts";
 import { flavorOf, parseConfig, type FledgeConfig } from "./config.ts";
 import { detectProject } from "./detect.ts";
@@ -502,6 +505,69 @@ async function loadHistory() {
   jobs.sort((a, b) => a.createdAt - b.createdAt);
 }
 
+// ------------------------------------------------------------------ assistant
+
+/** The assistant's read-only view of fledge (see ai/tools.ts). */
+const assistantContext: ToolContext = {
+  async apps() {
+    return (await listProjects()).map((p) => ({ id: p.id, name: p.name, root: p.root, ready: !!p.config, source: p.source, error: p.error ?? null }));
+  },
+  async app(id) {
+    const p = await getProject(id);
+    if (!p) return null;
+    return {
+      id: p.id,
+      name: p.name,
+      root: p.root,
+      source: p.source,
+      error: p.error,
+      config: p.config && {
+        flavors: p.config.flavors.map(({ name, label, flavor, target, confirm }) => ({ name, label, flavor, target, confirm })),
+        toggles: p.config.toggles.map(({ id, label }) => ({ id, label })),
+        commands: p.config.commands ?? generateCommands(p.config),
+        release: p.config.release && {
+          repo: p.config.release.github.repo,
+          baseBranch: p.config.release.github.baseBranch,
+          tickets: p.config.release.tickets?.project,
+          jira: p.config.release.jira ? { from: p.config.release.jira.fromStatus, to: p.config.release.jira.toStatus } : null,
+        },
+      },
+    };
+  },
+  async checkouts(id) {
+    const p = await getProject(id);
+    return p ? checkouts(p) : [];
+  },
+  builds: () => jobs,
+  log: (id) => logs.get(id),
+  devices: () => listDevices(),
+  async releases(id) {
+    const p = await getProject(id);
+    return p?.config?.release ? releases(p) : [];
+  },
+  async changes(id, since) {
+    const p = await getProject(id);
+    if (!p?.config?.release) throw new Error("releases aren't set up for this app");
+    const tag = since ?? (await releases(p))[0]?.tag ?? null;
+    const f = await gatherFacts(p, tag, true);
+    return {
+      since: f.previous?.tag ?? "(first release)",
+      range: `${f.previous?.base.slice(0, 8) ?? "start"}..${f.head.sha.slice(0, 8)}`,
+      suggestedVersion: f.version,
+      prs: f.prs.map((pr) => ({ number: pr.number, title: pr.title, dri: pr.dri, tickets: pr.tickets, files: pr.changedFiles, versionBump: pr.versionBump, stackedOn: pr.stackedOn })),
+      tickets: Object.fromEntries(Object.entries(f.tickets).map(([k, t]) => [k, { summary: t.summary, status: t.status, assignee: t.assignee }])),
+    };
+  },
+  async plan(id, checkout, target, output) {
+    const options: Record<string, unknown> = {};
+    if (output) options[target.platform === "android" ? "androidArtifact" : "iosArtifact"] = output;
+    const r = await plan({ project: id, checkout, targets: [target], options });
+    if ("error" in r) throw new Error(String(r.error));
+    if (r.skipped.length) throw new Error(r.skipped[0].reason);
+    return { command: r.builds[0].argv.join(" "), pubGetFirst: r.pubGet?.join(" ") ?? null, notes: r.builds[0].notes };
+  },
+};
+
 async function plan(body: unknown) {
   const u = await usableProject((body as Record<string, unknown> | null)?.project);
   if ("error" in u) return u;
@@ -556,6 +622,8 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
   const parts = url.pathname.split("/").filter(Boolean); // ["api", ...]
 
   if (req.method === "GET" && url.pathname === "/api/devices") return send(res, 200, await listDevices());
+
+  if (url.pathname.startsWith("/api/ai/")) return assistantApi(req, res, url);
 
   if (req.method === "GET" && url.pathname === "/api/info") {
     const project = await getProject(url.searchParams.get("project"));
@@ -856,6 +924,51 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
     return send(res, 200, { ok: true });
   }
 
+  send(res, 404, { error: "not found" });
+}
+
+async function assistantApi(req: http.IncomingMessage, res: http.ServerResponse, url: URL) {
+  const body = req.method === "POST" ? ((await readJson(req)) as Record<string, unknown>) : {};
+  const fail = (e: unknown) => send(res, 400, { error: (e as Error).message });
+
+  if (url.pathname === "/api/ai/providers") {
+    if (req.method === "GET") return send(res, 200, await listProviders());
+    if (req.method === "POST") return saveProvider(body).then((p) => send(res, 200, p), fail);
+  }
+  const providerRoute = /^\/api\/ai\/providers\/([a-z0-9-]+)(\/active)?$/.exec(url.pathname);
+  if (providerRoute) {
+    if (req.method === "DELETE" && !providerRoute[2]) return removeProvider(providerRoute[1]).then(() => send(res, 200, { ok: true }), fail);
+    if (req.method === "POST" && providerRoute[2]) return setActive(providerRoute[1]).then(() => send(res, 200, { ok: true }), fail);
+  }
+  if (url.pathname === "/api/ai/models" && req.method === "POST") {
+    return availableModels(body as { id?: string; preset: string; baseUrl?: string; apiKey?: string }).then((m) => send(res, 200, m), fail);
+  }
+
+  if (url.pathname === "/api/ai/conversations") {
+    if (req.method === "GET") return send(res, 200, listConversations());
+    if (req.method === "POST") {
+      const app = typeof body.app === "string" && (await getProject(body.app)) ? body.app : null;
+      const c = newConversation(app);
+      return send(res, 200, { id: c.id });
+    }
+  }
+  const convRoute = /^\/api\/ai\/conversations\/([a-z0-9]+)(\/messages)?$/.exec(url.pathname);
+  if (convRoute) {
+    const c = getConversation(convRoute[1]);
+    if (!c) return send(res, 404, { error: "no such conversation" });
+    if (req.method === "GET" && !convRoute[2]) {
+      // The provider's raw replies stay on the server.
+      return send(res, 200, { ...c, messages: c.messages.map((m) => (m.role === "assistant" ? { ...m, raw: undefined } : m)) });
+    }
+    if (req.method === "POST" && convRoute[2]) {
+      const text = typeof body.text === "string" ? body.text.trim().slice(0, 8000) : "";
+      if (!text) return send(res, 400, { error: "empty message" });
+      if (c.busy) return send(res, 409, { error: "still answering the last message" });
+      send(res, 202, { ok: true });
+      void sendToAssistant(c, text, assistantContext, (event) => broadcast("assistant", { conversation: c.id, event }), typeof body.provider === "string" ? body.provider : undefined);
+      return;
+    }
+  }
   send(res, 404, { error: "not found" });
 }
 
