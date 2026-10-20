@@ -41,7 +41,7 @@ import {
   type Project,
 } from "./projects.ts";
 import { startupProject } from "./repo.ts";
-import { install, installBlocker, listDevices, NeedsReplace } from "./devices.ts";
+import { install, installBlocker, listDevices, NeedsReplace, type Device } from "./devices.ts";
 
 const run = promisify(execFile);
 const PORT = Number(process.env.PORT ?? 4417);
@@ -596,6 +596,77 @@ async function plan(body: unknown) {
   return { project: { id: project.id, name: project.name }, pubGet, checkout: info, builds, skipped };
 }
 
+/** Queues a plan's builds; returns the new jobs. */
+function enqueue(p: Exclude<Awaited<ReturnType<typeof plan>>, { error: unknown }>) {
+  const added: Job[] = [];
+  for (const b of p.builds) {
+    const job: Job = {
+      id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+      project: p.project.id,
+      projectName: p.project.name,
+      checkout: p.checkout.path,
+      branch: p.checkout.branch,
+      sha: p.checkout.sha,
+      platform: b.platform,
+      flavor: b.flavor,
+      mode: b.mode,
+      artifact: b.artifact,
+      command: b.argv.join(" "), // exactly what runs
+      pubGet: p.pubGet,
+      nativeFlavor: b.nativeFlavor,
+      notes: b.notes,
+      status: "queued",
+      createdAt: Date.now(),
+    };
+    argvs.set(job.id, b.argv);
+    jobs.push(job);
+    added.push(job);
+  }
+  publishJobs();
+  pump();
+  return added;
+}
+
+/** Whether a build can go on a device now, and which device. */
+async function installable(job: Job, deviceId: unknown): Promise<{ device: Device; file: string } | { error: string; status: number }> {
+  if (job.status !== "succeeded" || !job.artifactFile || !existsSync(job.artifactFile)) {
+    return { status: 400, error: "only a finished build with its artifact can be installed" };
+  }
+  const blocked = installBlocker({ platform: job.platform, artifact: job.artifact, exportMethod: exportMethodOf(job) });
+  if (blocked) return { status: 400, error: blocked };
+  if (job.install?.state === "installing") return { status: 409, error: "already installing this build" };
+  const device = (await listDevices()).find((d) => d.id === deviceId && d.platform === job.platform);
+  if (!device) return { status: 404, error: "that device is not connected" };
+  if (!device.available) return { status: 409, error: `${device.name} is not ready (${device.detail})` };
+  return { device, file: job.artifactFile };
+}
+
+async function runInstall(job: Job, { device, file }: { device: Device; file: string }, opts: { launch: boolean; replace: boolean }) {
+  job.install = { state: "installing", device: device.name, at: Date.now() };
+  publishJobs();
+  const target = {
+    platform: job.platform,
+    mode: job.mode,
+    artifact: job.artifact,
+    file,
+    bundleId: job.verified?.bundleId ?? bundleIdOf(job, (await getProject(job.project))?.config ?? null) ?? "",
+    exportMethod: exportMethodOf(job),
+    arm64Only: job.command.includes("--target-platform android-arm64"),
+  };
+  await log(job, `\n— Install on ${device.name} (${device.detail}) —\n`);
+  try {
+    await install(target, device, opts, (t) => log(job, t));
+    job.install = { state: "installed", device: device.name, at: Date.now() };
+    await log(job, `Installed on ${device.name}.\n`);
+  } catch (e) {
+    const replace = e instanceof NeedsReplace;
+    job.install = { state: replace ? "needs-replace" : "failed", device: device.name, message: (e as Error).message, at: Date.now() };
+    await log(job, `${replace ? "Needs replace" : "Install failed"}: ${(e as Error).message}\n`);
+  }
+  if (job.archiveDir) await writeFile(path.join(job.archiveDir, "job.json"), JSON.stringify(job, null, 2)).catch(() => {});
+  publishJobs();
+}
+
 // --------------------------------------------------------------------- http
 
 function send(res: http.ServerResponse, status: number, body: unknown) {
@@ -813,30 +884,7 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
   if (req.method === "POST" && url.pathname === "/api/jobs") {
     const p = await plan(await readJson(req));
     if ("error" in p) return send(res, 400, p);
-    for (const b of p.builds) {
-      const job: Job = {
-        id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
-        project: p.project.id,
-        projectName: p.project.name,
-        checkout: p.checkout.path,
-        branch: p.checkout.branch,
-        sha: p.checkout.sha,
-        platform: b.platform,
-        flavor: b.flavor,
-        mode: b.mode,
-        artifact: b.artifact,
-        command: b.argv.join(" "), // exactly what runs
-        pubGet: p.pubGet,
-        nativeFlavor: b.nativeFlavor,
-        notes: b.notes,
-        status: "queued",
-        createdAt: Date.now(),
-      };
-      argvs.set(job.id, b.argv);
-      jobs.push(job);
-    }
-    publishJobs();
-    pump();
+    enqueue(p);
     return send(res, 200, { queued: p.builds.length, skipped: p.skipped });
   }
 
@@ -871,41 +919,10 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
 
   if (job && req.method === "POST" && parts[3] === "install") {
     const b = (await readJson(req)) as { deviceId?: unknown; launch?: unknown; replace?: unknown };
-    if (job.status !== "succeeded" || !job.artifactFile || !existsSync(job.artifactFile)) {
-      return send(res, 400, { error: "only a finished build with its artifact can be installed" });
-    }
-    const blocked = installBlocker({ platform: job.platform, artifact: job.artifact, exportMethod: exportMethodOf(job) });
-    if (blocked) return send(res, 400, { error: blocked });
-    if (job.install?.state === "installing") return send(res, 409, { error: "already installing this build" });
-    const device = (await listDevices()).find((d) => d.id === b.deviceId && d.platform === job.platform);
-    if (!device) return send(res, 404, { error: "that device is not connected" });
-    if (!device.available) return send(res, 409, { error: `${device.name} is not ready (${device.detail})` });
-
-    job.install = { state: "installing", device: device.name, at: Date.now() };
-    publishJobs();
+    const ready = await installable(job, b.deviceId);
+    if ("error" in ready) return send(res, ready.status, { error: ready.error });
     send(res, 202, { ok: true });
-
-    const target = {
-      platform: job.platform,
-      mode: job.mode,
-      artifact: job.artifact,
-      file: job.artifactFile,
-      bundleId: job.verified?.bundleId ?? bundleIdOf(job, (await getProject(job.project))?.config ?? null) ?? "",
-      exportMethod: exportMethodOf(job),
-      arm64Only: job.command.includes("--target-platform android-arm64"),
-    };
-    await log(job, `\n— Install on ${device.name} (${device.detail}) —\n`);
-    try {
-      await install(target, device, { launch: b.launch === true, replace: b.replace === true }, (t) => log(job, t));
-      job.install = { state: "installed", device: device.name, at: Date.now() };
-      await log(job, `Installed on ${device.name}.\n`);
-    } catch (e) {
-      const replace = e instanceof NeedsReplace;
-      job.install = { state: replace ? "needs-replace" : "failed", device: device.name, message: (e as Error).message, at: Date.now() };
-      await log(job, `${replace ? "Needs replace" : "Install failed"}: ${(e as Error).message}\n`);
-    }
-    if (job.archiveDir) await writeFile(path.join(job.archiveDir, "job.json"), JSON.stringify(job, null, 2)).catch(() => {});
-    publishJobs();
+    await runInstall(job, ready, { launch: b.launch === true, replace: b.replace === true });
     return;
   }
 
