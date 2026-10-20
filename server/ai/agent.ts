@@ -39,6 +39,20 @@ export function pendingApprovals(conversation: string) {
   return [...waiting].filter(([, w]) => w.conversation === conversation).map(([id, w]) => ({ id, ...w.approval }));
 }
 
+/**
+ * Shows an action to the developer and waits for the answer, reporting both
+ * through emit. Used by conversations, and by MCP clients under "mcp".
+ */
+export function requestApproval(conversation: string, id: string, approval: Approval, emit: (e: AgentEvent) => void): Promise<boolean> {
+  return new Promise<boolean>((answer) => {
+    waiting.set(id, { conversation, approval, answer });
+    emit({ type: "approval", id, ...approval });
+  }).then((approved) => {
+    emit({ type: "approval_result", id, approved });
+    return approved;
+  });
+}
+
 /** The developer's answer to an action; false if nothing was waiting for it. */
 export function answerApproval(conversation: string, id: string, approved: boolean) {
   const w = waiting.get(id);
@@ -123,15 +137,7 @@ export async function send(
       const results: ToolResult[] = [];
       for (const call of r.toolCalls) {
         emit({ type: "tool", id: call.id, name: call.name, input: call.input });
-        const approve = (approval: Approval) =>
-          new Promise<boolean>((answer) => {
-            waiting.set(call.id, { conversation: c.id, approval, answer });
-            emit({ type: "approval", id: call.id, ...approval });
-          }).then((approved) => {
-            emit({ type: "approval_result", id: call.id, approved });
-            return approved;
-          });
-        const res = await runTool(call.name, call.input, ctx, approve);
+        const res = await runTool(call.name, call.input, ctx, (approval) => requestApproval(c.id, call.id, approval, emit));
         results.push({ id: call.id, name: call.name, content: res.content, isError: res.isError, approval: res.approval });
         emit({ type: "tool_result", id: call.id, name: call.name, isError: res.isError, preview: res.content.slice(0, 600) });
       }
