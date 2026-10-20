@@ -1,9 +1,10 @@
 // The assistant's loop, the same for every provider: send the conversation and
 // tools, stream the reply, run the tools it asks for, send the results back,
-// repeat until it answers. Conversations live in memory for this phase.
+// repeat until it answers. An action waits for the developer to approve it in
+// the page; the model can't answer for them. Conversations live in memory.
 
 import { connectorFor } from "./providers.ts";
-import { runTool, toolDefs, type ToolContext } from "./tools.ts";
+import { runTool, toolDefs, type Approval, type ToolContext } from "./tools.ts";
 import type { AiMessage, Connector, ToolResult } from "./types.ts";
 
 const MAX_STEPS = 12;
@@ -23,11 +24,29 @@ export type AgentEvent =
   | { type: "text"; delta: string }
   | { type: "tool"; id: string; name: string; input: unknown }
   | { type: "tool_result"; id: string; name: string; isError: boolean; preview: string }
+  | { type: "approval"; id: string; title: string; details: string[] }
+  | { type: "approval_result"; id: string; approved: boolean }
   | { type: "note"; text: string }
   | { type: "done" }
   | { type: "error"; message: string };
 
 const conversations = new Map<string, Conversation>();
+// Actions waiting for the developer, by tool call id.
+const waiting = new Map<string, { conversation: string; approval: Approval; answer: (approved: boolean) => void }>();
+
+/** The actions in a conversation still waiting for an answer, for a page that opens it mid-wait. */
+export function pendingApprovals(conversation: string) {
+  return [...waiting].filter(([, w]) => w.conversation === conversation).map(([id, w]) => ({ id, ...w.approval }));
+}
+
+/** The developer's answer to an action; false if nothing was waiting for it. */
+export function answerApproval(conversation: string, id: string, approved: boolean) {
+  const w = waiting.get(id);
+  if (!w || w.conversation !== conversation) return false;
+  waiting.delete(id);
+  w.answer(approved);
+  return true;
+}
 
 export function listConversations() {
   return [...conversations.values()]
@@ -59,7 +78,8 @@ function system(app: string | null) {
     `Today is ${new Date().toISOString().slice(0, 10)}.`,
     app ? `The app open in fledge is "${app}"; questions without an app are about it.` : "No app is open in fledge right now.",
     "Use the tools to look things up instead of guessing: builds and their logs, checkouts, git history, releases, tickets, devices, and the exact build commands from the app's config.",
-    "For now you can only read. When asked to change something (create a branch, start a build, publish a release), say exactly what you would do and that actions arrive in a later version of fledge.",
+    "You can also act: create a local branch, push a branch, queue builds, cancel a build, install a build on a phone. Each action is shown to the developer, who approves or declines it, so call the tool directly instead of asking for permission in text. If one is declined, don't retry it; ask what they'd like instead.",
+    "Branches stay local until the developer asks for them to be pushed. Name new branches like the repository's existing ones (check git_branches). Releases and Jira changes aren't available yet; say what you would do.",
     "Answer briefly and concretely. Name builds, commits, branches and tickets by their ids so the developer can find them. If a tool fails, say what failed.",
   ].join("\n");
 }
@@ -102,8 +122,16 @@ export async function send(
       const results: ToolResult[] = [];
       for (const call of r.toolCalls) {
         emit({ type: "tool", id: call.id, name: call.name, input: call.input });
-        const res = await runTool(call.name, call.input, ctx);
-        results.push({ id: call.id, name: call.name, content: res.content, isError: res.isError });
+        const approve = (approval: Approval) =>
+          new Promise<boolean>((answer) => {
+            waiting.set(call.id, { conversation: c.id, approval, answer });
+            emit({ type: "approval", id: call.id, ...approval });
+          }).then((approved) => {
+            emit({ type: "approval_result", id: call.id, approved });
+            return approved;
+          });
+        const res = await runTool(call.name, call.input, ctx, approve);
+        results.push({ id: call.id, name: call.name, content: res.content, isError: res.isError, approval: res.approval });
         emit({ type: "tool_result", id: call.id, name: call.name, isError: res.isError, preview: res.content.slice(0, 600) });
       }
       c.messages.push({ role: "tool", results });

@@ -20,6 +20,11 @@ const ctx: ToolContext = {
   releases: async () => [],
   changes: async () => ({}),
   plan: async () => ({ command: "flutter build apk --debug" }),
+  prepareBuilds: async () => ({ builds: [], skipped: [], queue: () => [] }),
+  cancelBuild: () => {},
+  prepareInstall: async () => {
+    throw new Error("no devices");
+  },
 };
 
 test("every tool has a strict object schema the providers accept", () => {

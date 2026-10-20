@@ -19,6 +19,8 @@ export interface ToolResult {
   name: string;
   content: string;
   isError?: boolean;
+  /** For an action: what the developer was asked, and the answer. Kept for the page; not sent to models. */
+  approval?: { title: string; details: string[]; approved: boolean };
 }
 
 export type AiMessage =

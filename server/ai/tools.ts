@@ -1,8 +1,10 @@
 // What the assistant can do: fledge's own functions, described for the model.
-// Phase 1 is read-only. Model output is untrusted, so every input is checked
-// against its schema here and then against fledge's own state (the app must
-// exist, a checkout must be one of its worktrees, refs and ticket keys must be
-// well-formed) before anything runs.
+// Model output is untrusted, so every input is checked against its schema here
+// and then against fledge's own state (the app must exist, a checkout must be
+// one of its worktrees, refs and ticket keys must be well-formed) before
+// anything runs. Lookups run straight away. Actions (branches, pushes, builds,
+// installs) first say exactly what they will do, and run only once the
+// developer approves that in the page.
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -30,19 +32,50 @@ export interface ToolContext {
   checkouts(appId: string): Promise<{ path: string; branch: string; sha: string; dirty: number; version: string }[]>;
   builds(): { id: string; project?: string; flavor: string; mode: string; platform: string; artifact: string; status: string; branch: string; sha: string; checkout: string; command: string; error?: string; createdAt: number; startedAt?: number; endedAt?: number; verified?: Record<string, string>; install?: unknown }[];
   log(buildId: string): string | undefined;
-  devices(): Promise<{ platform: string; name: string; detail: string; available: boolean }[]>;
+  devices(): Promise<{ platform: string; id: string; name: string; detail: string; available: boolean }[]>;
   releases(appId: string): Promise<{ tag: string; prerelease: boolean; createdAt: string }[]>;
   changes(appId: string, since: string | null): Promise<unknown>;
   plan(appId: string, checkout: string | undefined, target: { platform: string; flavor: string; mode: string }, output?: string): Promise<unknown>;
+  /** Plans builds without queueing them; queue() queues exactly that plan. Throws when it can't be built. */
+  prepareBuilds(
+    appId: string,
+    checkout: string,
+    targets: { platform: string; flavor: string; mode: string }[],
+    options: Record<string, unknown>,
+  ): Promise<{
+    builds: { flavor: string; label: string; confirm: boolean; mode: string; platform: string; artifact: string }[];
+    skipped: string[];
+    queue(): string[];
+  }>;
+  cancelBuild(id: string): void;
+  /** Checks a build can go on the device now; install() runs it and reports how it went. Throws otherwise. */
+  prepareInstall(buildId: string, deviceId: string): Promise<{ device: string; install(opts: { launch: boolean; replace: boolean }): Promise<unknown> }>;
 }
 
-interface Tool {
+/** What an action will do, shown to the developer to approve or decline. */
+export interface Approval {
+  title: string;
+  details: string[];
+}
+
+export type Approver = (a: Approval) => Promise<boolean>;
+
+interface Lookup {
   def: ToolDef;
   run(input: Record<string, unknown>, ctx: ToolContext): Promise<unknown>;
 }
 
+interface Action {
+  def: ToolDef;
+  /** Checks the input and describes the action; nothing has changed yet. run() does it. */
+  prepare(input: Record<string, unknown>, ctx: ToolContext): Promise<Approval & { run(): Promise<unknown> }>;
+}
+
+type Tool = Lookup | Action;
+
 const str = (description: string, extra: Record<string, unknown> = {}) => ({ type: "string", description, ...extra });
 const num = (description: string) => ({ type: "integer", description });
+const bool = (description: string) => ({ type: "boolean", description });
 const obj = (properties: Record<string, unknown>, required: string[] = []): ToolDef["schema"] => ({
   type: "object",
   properties,
@@ -66,6 +99,23 @@ async function needCheckout(ctx: ToolContext, appId: string, checkout: unknown) 
 }
 
 const REF = /^[A-Za-z0-9._\/-]{1,200}$/;
+const git = async (cwd: string, args: string[], timeout = 30_000) => (await run("git", ["-C", cwd, ...args], { maxBuffer: 8 << 20, timeout })).stdout.trim();
+const gitOk = (cwd: string, args: string[]) => git(cwd, args).then(() => true, () => false);
+
+/** A branch name git accepts, that can't be read as an option. */
+async function needBranchName(cwd: string, name: unknown) {
+  if (typeof name !== "string" || !REF.test(name) || name.startsWith("-") || !(await gitOk(cwd, ["check-ref-format", "--branch", name]))) {
+    throw new Error(`"${String(name)}" isn't a valid branch name`);
+  }
+  return name;
+}
+
+const commitLine = (cwd: string, ref: string) => git(cwd, ["log", "-1", "--format=%h %s", ref, "--"]);
+
+async function baseBranch(ctx: ToolContext, appId: string) {
+  const a = await ctx.app(appId);
+  return (a?.config?.release as { baseBranch?: string } | null | undefined)?.baseBranch ?? null;
+}
 
 const TOOLS: Tool[] = [
   {
@@ -233,37 +283,268 @@ const TOOLS: Tool[] = [
       return ctx.plan(a.id, c.path, { platform: String(i.platform), flavor: String(i.environment), mode: String(i.mode) }, i.output as string | undefined);
     },
   },
+
+  // ------------------------------------------------------------------ actions
+  {
+    def: {
+      name: "create_branch",
+      description:
+        "Create a local git branch (needs the developer's approval). It is not pushed; use push_branch for that. Optionally switch a checkout with no uncommitted changes to it.",
+      schema: obj(
+        {
+          app: APP,
+          name: str("The new branch's name, following the repository's convention (look at git_branches first)."),
+          from: str("What to branch from: a branch, tag or commit. A remote branch like origin/main is fetched first. Default: origin/<the release base branch>, else the main checkout's branch."),
+          switch_checkout: str("A checkout (path or branch) to switch to the new branch (optional)."),
+        },
+        ["app", "name"],
+      ),
+    },
+    async prepare(i, ctx) {
+      const a = await needApp(ctx, i.app);
+      const name = await needBranchName(a.root, i.name);
+      if (await gitOk(a.root, ["show-ref", "--verify", "--quiet", `refs/heads/${name}`])) throw new Error(`a branch "${name}" already exists`);
+      const base = await baseBranch(ctx, a.id);
+      const from = i.from === undefined ? (base ? `origin/${base}` : (await needCheckout(ctx, a.id, undefined)).branch) : String(i.from);
+      if (!REF.test(from) || from.startsWith("-")) throw new Error("from isn't a valid branch, tag or commit name");
+      const remote = /^origin\/(.+)$/.exec(from)?.[1];
+      if (!(await gitOk(a.root, ["rev-parse", "--verify", "--quiet", `${from}^{commit}`]))) throw new Error(`there's no "${from}" here`);
+      const sw = i.switch_checkout === undefined ? null : await needCheckout(ctx, a.id, i.switch_checkout);
+      if (sw && sw.dirty) throw new Error(`${sw.path} has ${sw.dirty} uncommitted file(s); it can't be switched`);
+      return {
+        title: `Create branch ${name}`,
+        details: [
+          ...(remote ? [`Fetch ${from} first`] : []),
+          `From ${from}: ${await commitLine(a.root, from)}${remote ? " (before fetching)" : ""}`,
+          sw ? `Switch ${sw.path} from ${sw.branch} to it` : "No checkout is switched",
+          "Local only: nothing is pushed",
+        ],
+        async run() {
+          if (remote) await git(a.root, ["fetch", "--quiet", "origin", `refs/heads/${remote}:refs/remotes/origin/${remote}`], 120_000);
+          // --no-track: a branch made from origin/main must not push to main.
+          await git(a.root, ["branch", "--no-track", name, from]);
+          if (sw) await git(sw.path, ["switch", name]);
+          return `Created ${name} at ${await commitLine(a.root, name)}${sw ? `, and ${sw.path} is on it` : ""}. It has not been pushed.`;
+        },
+      };
+    },
+  },
+  {
+    def: {
+      name: "push_branch",
+      description: "Push a local branch to origin and set it as the upstream (needs the developer's approval). Never forces, and refuses the release base branch.",
+      schema: obj({ app: APP, branch: str("The local branch to push.") }, ["app", "branch"]),
+    },
+    async prepare(i, ctx) {
+      const a = await needApp(ctx, i.app);
+      const branch = await needBranchName(a.root, i.branch);
+      if (!(await gitOk(a.root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]))) throw new Error(`there's no local branch "${branch}"`);
+      const base = await baseBranch(ctx, a.id);
+      if ([base, "main", "master"].includes(branch)) throw new Error(`fledge doesn't push ${branch}; that goes through a pull request`);
+      const onRemote = await gitOk(a.root, ["show-ref", "--verify", "--quiet", `refs/remotes/origin/${branch}`]);
+      const against = onRemote ? `origin/${branch}` : base && (await gitOk(a.root, ["show-ref", "--verify", "--quiet", `refs/remotes/origin/${base}`])) ? `origin/${base}` : null;
+      const count = against ? await git(a.root, ["rev-list", "--count", `${against}..${branch}`]) : null;
+      return {
+        title: `Push ${branch} to origin`,
+        details: [
+          onRemote ? `Updates origin/${branch}` : `Creates origin/${branch}`,
+          ...(count !== null ? [`${count} commit(s) not on ${against}`] : []),
+          `Latest: ${await commitLine(a.root, branch)}`,
+          "No force: git refuses if origin has commits this branch lacks",
+        ],
+        async run() {
+          await git(a.root, ["push", "--set-upstream", "origin", `refs/heads/${branch}:refs/heads/${branch}`], 180_000);
+          return `Pushed ${branch} to origin.`;
+        },
+      };
+    },
+  },
+  {
+    def: {
+      name: "start_builds",
+      description: "Queue builds (needs the developer's approval). Each one runs the command from the app's config; list_builds shows progress.",
+      schema: obj(
+        {
+          app: APP,
+          checkout: str("A checkout path or branch (default: the main checkout)."),
+          builds: {
+            type: "array",
+            description: "The builds to queue (at most 18).",
+            items: obj(
+              {
+                environment: str("The environment's name."),
+                platform: str("android or ios.", { enum: ["android", "ios"] }),
+                mode: str("Build type.", { enum: ["debug", "profile", "release"] }),
+              },
+              ["environment", "platform", "mode"],
+            ),
+          },
+          android_output: str("apk (default) or appbundle.", { enum: ["apk", "appbundle"] }),
+          ios_output: str("ipa (default), app (for a device), or xcode (Prepare Xcode).", { enum: ["ipa", "app", "xcode"] }),
+          export_method: str("For an ipa (default app-store).", { enum: ["app-store", "ad-hoc", "development"] }),
+          split_debug_info: bool("Keep Dart symbols out of the binary, as CI does."),
+          obfuscate: bool("Rename Dart symbols; needs split_debug_info."),
+          arm64_only: bool("Android: 64-bit ARM phones only (faster; for a developer's own phone)."),
+          toggles: { type: "array", description: "Ids of the app's switches to turn on (see app_overview).", items: str("A switch id.") },
+        },
+        ["app", "builds"],
+      ),
+    },
+    async prepare(i, ctx) {
+      const a = await needApp(ctx, i.app);
+      const c = await needCheckout(ctx, a.id, i.checkout);
+      const targets = (i.builds as { environment: string; platform: string; mode: string }[]).map((b) => ({ platform: b.platform, flavor: b.environment, mode: b.mode }));
+      const p = await ctx.prepareBuilds(a.id, c.path, targets, {
+        androidArtifact: i.android_output,
+        iosArtifact: i.ios_output,
+        exportMethod: i.export_method,
+        splitDebugInfo: i.split_debug_info === true,
+        obfuscate: i.obfuscate === true,
+        arm64Only: i.arm64_only === true,
+        toggles: i.toggles ?? [],
+      });
+      if (!p.builds.length) throw new Error(`none of these can be built: ${p.skipped.join("; ")}`);
+      const flags = [i.split_debug_info && "split debug info", i.obfuscate && "obfuscated", i.arm64_only && "arm64 only", ...((i.toggles as string[] | undefined) ?? [])].filter(Boolean);
+      return {
+        title: `Queue ${p.builds.length} build${p.builds.length > 1 ? "s" : ""} of ${a.name}`,
+        details: [
+          `On ${c.branch} @ ${c.sha.slice(0, 8)}${c.dirty ? ` with ${c.dirty} uncommitted file(s)` : ""}`,
+          ...p.builds.map((b) => `${b.label} · ${b.mode} · ${b.platform} ${b.artifact}${b.confirm ? " (this environment asks for confirmation)" : ""}`),
+          ...(flags.length ? [`Options: ${flags.join(", ")}`] : []),
+          ...p.skipped.map((s) => `Skipped: ${s}`),
+        ],
+        async run() {
+          return { queued: p.queue(), skipped: p.skipped };
+        },
+      };
+    },
+  },
+  {
+    def: {
+      name: "cancel_build",
+      description: "Stop a running build or take a queued one off the queue (needs the developer's approval).",
+      schema: obj({ build_id: str("The build's id from list_builds.") }, ["build_id"]),
+    },
+    async prepare(i, ctx) {
+      const b = ctx.builds().find((x) => x.id === i.build_id);
+      if (!b) throw new Error("no build with that id");
+      if (b.status !== "queued" && b.status !== "running") throw new Error(`that build has already ${b.status}`);
+      return {
+        title: `${b.status === "running" ? "Stop" : "Unqueue"} ${b.flavor} ${b.mode} ${b.platform} ${b.artifact}`,
+        details: [`${b.project ?? ""} on ${b.branch} @ ${b.sha.slice(0, 8)}`, b.status === "running" ? `Running for ${Math.round((Date.now() - (b.startedAt ?? Date.now())) / 60_000)} min` : "Queued, not started"],
+        async run() {
+          ctx.cancelBuild(b.id);
+          return "Cancelled.";
+        },
+      };
+    },
+  },
+  {
+    def: {
+      name: "install_build",
+      description: "Install a finished build on a connected phone (needs the developer's approval). Waits for the install and reports how it went.",
+      schema: obj(
+        {
+          build_id: str("The build's id from list_builds."),
+          device_id: str("The phone's id from list_devices."),
+          launch: bool("Open the app afterwards (default false)."),
+          replace: bool("Uninstall the existing app first, erasing its data. Only when an install failed because the signatures differ."),
+        },
+        ["build_id", "device_id"],
+      ),
+    },
+    async prepare(i, ctx) {
+      const b = ctx.builds().find((x) => x.id === i.build_id);
+      if (!b) throw new Error("no build with that id");
+      const ready = await ctx.prepareInstall(b.id, String(i.device_id));
+      const opts = { launch: i.launch === true, replace: i.replace === true };
+      return {
+        title: `Install ${b.flavor} ${b.mode} ${b.artifact} on ${ready.device}`,
+        details: [
+          `Built from ${b.branch} @ ${b.sha.slice(0, 8)}${b.verified?.version ? `, version ${b.verified.version}` : ""}`,
+          ...(opts.replace ? ["Uninstalls the app first: its data on the phone is erased"] : []),
+          opts.launch ? "Opens the app afterwards" : "Doesn't open the app",
+        ],
+        run: () => ready.install(opts),
+      };
+    },
+  },
 ];
 
 export const toolDefs = (): ToolDef[] => TOOLS.map((t) => t.def);
 
-/** Checks a model-supplied input against the tool's schema (types, enums, required, no extras). */
+type Schema = { type?: string; enum?: string[]; properties?: Record<string, Schema>; required?: string[]; items?: Schema };
+
+/** Checks a model-supplied input against the tool's schema (types, enums, required, no extras), nested arrays and objects included. */
 export function inputProblem(def: ToolDef, input: Record<string, unknown>): string | null {
   if (!input || typeof input !== "object" || Array.isArray(input)) return "input must be an object";
   if ("__unparseable" in input) return "the tool input wasn't valid JSON";
-  for (const r of def.schema.required ?? []) if (!(r in input)) return `missing "${r}"`;
-  for (const [k, v] of Object.entries(input)) {
-    const p = def.schema.properties[k] as { type?: string; enum?: string[] } | undefined;
-    if (!p) return `unknown field "${k}"`;
-    if (p.type === "string" && typeof v !== "string") return `"${k}" must be text`;
-    if (p.type === "integer" && !Number.isInteger(v)) return `"${k}" must be a whole number`;
-    if (p.enum && !p.enum.includes(v as string)) return `"${k}" must be one of ${p.enum.join(", ")}`;
+  return valueProblem(def.schema as Schema, input, "input");
+}
+
+function valueProblem(p: Schema, v: unknown, at: string): string | null {
+  if (p.type === "object") {
+    if (!v || typeof v !== "object" || Array.isArray(v)) return `"${at}" must be an object`;
+    const o = v as Record<string, unknown>;
+    for (const r of p.required ?? []) if (!(r in o)) return `missing "${r}"`;
+    for (const [k, x] of Object.entries(o)) {
+      const q = p.properties?.[k];
+      if (!q) return `unknown field "${k}"`;
+      const problem = valueProblem(q, x, k);
+      if (problem) return problem;
+    }
+    return null;
   }
+  if (p.type === "array") {
+    if (!Array.isArray(v)) return `"${at}" must be a list`;
+    if (v.length > 18) return `"${at}" has too many items`;
+    for (const x of v) {
+      const problem = p.items && valueProblem(p.items, x, at);
+      if (problem) return problem;
+    }
+    return null;
+  }
+  if (p.type === "string" && typeof v !== "string") return `"${at}" must be text`;
+  if (p.type === "integer" && !Number.isInteger(v)) return `"${at}" must be a whole number`;
+  if (p.type === "boolean" && typeof v !== "boolean") return `"${at}" must be true or false`;
+  if (p.enum && !p.enum.includes(v as string)) return `"${at}" must be one of ${p.enum.join(", ")}`;
   return null;
 }
 
-/** Runs a tool call; failures come back as error results the model can read and correct. */
-export async function runTool(name: string, input: Record<string, unknown>, ctx: ToolContext): Promise<{ content: string; isError: boolean }> {
+export const isAction = (name: string) => TOOLS.some((t) => t.def.name === name && "prepare" in t);
+
+/**
+ * Runs a tool call; failures come back as error results the model can read
+ * and correct. An action runs only if `approve` says yes to its description.
+ */
+export async function runTool(
+  name: string,
+  input: Record<string, unknown>,
+  ctx: ToolContext,
+  approve?: Approver,
+): Promise<{ content: string; isError: boolean; approval?: Approval & { approved: boolean } }> {
   const tool = TOOLS.find((t) => t.def.name === name);
   if (!tool) return { content: `there's no tool called "${name}"`, isError: true };
   const problem = inputProblem(tool.def, input);
   if (problem) return { content: `invalid input for ${name}: ${problem}`, isError: true };
+  let approval: (Approval & { approved: boolean }) | undefined;
   try {
-    const out = await tool.run(input, ctx);
+    let out: unknown;
+    if ("prepare" in tool) {
+      if (!approve) return { content: "actions need the developer's approval, which isn't available here", isError: true };
+      const action = await tool.prepare(input, ctx);
+      approval = { title: action.title, details: action.details, approved: await approve({ title: action.title, details: action.details }) };
+      if (!approval.approved) {
+        return { content: "The developer declined this. Don't retry it; ask what they'd like instead.", isError: true, approval };
+      }
+      out = await action.run();
+    } else {
+      out = await tool.run(input, ctx);
+    }
     let content = typeof out === "string" ? out : JSON.stringify(out, null, 1);
     if (content.length > MAX_RESULT) content = `${content.slice(0, MAX_RESULT)}\n… (cut; ask for less, e.g. a smaller limit or tail)`;
-    return { content: content || "(empty)", isError: false };
+    return { content: content || "(empty)", isError: false, approval };
   } catch (e) {
-    return { content: (e as Error).message.split("\n")[0], isError: true };
+    return { content: (e as Error).message.split("\n")[0], isError: true, approval };
   }
 }

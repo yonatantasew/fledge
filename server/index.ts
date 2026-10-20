@@ -566,6 +566,35 @@ const assistantContext: ToolContext = {
     if (r.skipped.length) throw new Error(r.skipped[0].reason);
     return { command: r.builds[0].argv.join(" "), pubGetFirst: r.pubGet?.join(" ") ?? null, notes: r.builds[0].notes };
   },
+  async prepareBuilds(id, checkout, targets, options) {
+    const r = await plan({ project: id, checkout, targets, options });
+    if ("error" in r) throw new Error(String(r.error));
+    const flavors = (await getProject(id))?.config?.flavors ?? [];
+    const label = (name: string) => flavors.find((f) => f.name === name);
+    return {
+      builds: r.builds.map((b) => ({ flavor: b.flavor, label: label(b.flavor)?.label ?? b.flavor, confirm: !!label(b.flavor)?.confirm, mode: b.mode, platform: b.platform, artifact: b.artifact })),
+      skipped: r.skipped.map((s) => `${s.flavor} ${s.mode} ${s.platform}: ${s.reason}`),
+      queue: () => enqueue(r).map((j) => j.id),
+    };
+  },
+  cancelBuild(id) {
+    const job = jobs.find((j) => j.id === id);
+    if (job) cancel(job);
+    publishJobs();
+  },
+  async prepareInstall(buildId, deviceId) {
+    const job = jobs.find((j) => j.id === buildId);
+    if (!job) throw new Error("no build with that id");
+    const ready = await installable(job, deviceId);
+    if ("error" in ready) throw new Error(ready.error);
+    return {
+      device: `${ready.device.name} (${ready.device.detail})`,
+      async install(opts) {
+        await runInstall(job, ready, opts);
+        return job.install;
+      },
+    };
+  },
 };
 
 async function plan(body: unknown) {
