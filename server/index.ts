@@ -174,6 +174,31 @@ interface Job {
   verified?: Record<string, string>;
   error?: string;
   install?: { state: "installing" | "installed" | "failed" | "needs-replace"; device: string; message?: string; at: number };
+  steps?: Step[]; // missing on builds recorded before steps were
+}
+
+/** One stage of a build, with where its output starts and ends in the build's log. */
+interface Step {
+  id: string; // "pub" | "build" | "collect" | "install-<n>"
+  label: string;
+  state: "running" | "succeeded" | "failed" | "skipped" | "cancelled";
+  detail?: string;
+  logStart: number;
+  logEnd?: number;
+  startedAt: number;
+  endedAt?: number;
+}
+
+function beginStep(job: Job, id: string, label: string) {
+  (job.steps ??= []).push({ id, label, state: "running", logStart: logs.get(job.id)?.length ?? 0, startedAt: Date.now() });
+  publishJobs();
+}
+
+function endStep(job: Job, id: string, state: Step["state"], detail?: string) {
+  const step = job.steps?.findLast((s) => s.id === id && s.state === "running");
+  if (!step) return;
+  Object.assign(step, { state, detail, logEnd: logs.get(job.id)?.length ?? 0, endedAt: Date.now() });
+  publishJobs();
 }
 
 // Fallback when the artifact's bundle id could not be read back (aapt2 missing).
@@ -267,10 +292,12 @@ async function pubGet(slot: { job: Job; child: ChildProcess | null }): Promise<n
     if ((slot.job.status as Status) === "cancelled") return null;
     if (pubDone.get(checkout) === (await pubspecState(checkout))) {
       await log(slot.job, "Dependencies already resolved for this checkout; skipping pub get.\n\n");
+      endStep(slot.job, "pub", "skipped", "already resolved");
       return 0;
     }
     if (!slot.job.pubGet) {
       await log(slot.job, "pub get is turned off in this app's commands (commands.pubGet is null).\n\n");
+      endStep(slot.job, "pub", "skipped", "turned off in the config");
       return 0;
     }
     const code = await step(slot, slot.job.pubGet);
@@ -294,27 +321,35 @@ async function runJob(job: Job) {
     await mkdir(job.archiveDir, { recursive: true });
     await log(job, `${job.branch} @ ${job.sha} in ${job.checkout}\n\n`);
 
+    beginStep(job, "pub", "pub get");
     const pub = await pubGet(slot);
+    // Cancel flips the status from the HTTP handler while we await the child.
+    const cancelled = () => (job.status as Status) === "cancelled";
+    endStep(job, "pub", cancelled() ? "cancelled" : pub === 0 ? "succeeded" : "failed", pub === 0 || cancelled() ? undefined : `exited with ${pub}`);
     let code: number | null = pub;
-    if ((job.status as Status) !== "cancelled" && pub === 0) {
+    if (!cancelled() && pub === 0) {
+      beginStep(job, "build", `flutter build ${job.artifact === "xcode" ? "ios --config-only" : job.artifact}`);
       code = await step(slot, argvs.get(job.id)!);
+      endStep(job, "build", cancelled() ? "cancelled" : code === 0 ? "succeeded" : "failed", code === 0 || cancelled() ? undefined : `exited with ${code}`);
     }
     job.exitCode = code;
 
-    // Cancel flips the status from the HTTP handler while we await the child.
-    if ((job.status as Status) === "cancelled") {
+    if (cancelled()) {
       await log(job, "\nCancelled.\n");
     } else if (pub !== 0) {
       job.status = "failed";
       job.error = `pub get exited with ${pub}`;
     } else if (code === 0) {
+      beginStep(job, "collect", job.artifact === "xcode" ? "Open Xcode" : "Archive and verify");
       try {
         await collect(job);
         job.status = "succeeded";
+        endStep(job, "collect", "succeeded", job.verified?.version);
       } catch (e) {
         job.status = "failed";
         job.error = `built, but collecting the artifact failed: ${(e as Error).message}`;
         await log(job, `\n${job.error}\n`);
+        endStep(job, "collect", "failed", (e as Error).message.split("\n")[0]);
       }
     } else {
       job.status = "failed";
@@ -323,6 +358,7 @@ async function runJob(job: Job) {
   } catch (e) {
     job.status = "failed";
     job.error = (e as Error).message;
+    for (const st of job.steps ?? []) if (st.state === "running") endStep(job, st.id, "failed", job.error);
   } finally {
     running.delete(job.id);
     job.endedAt = Date.now();
@@ -707,7 +743,8 @@ async function installable(job: Job, deviceId: unknown): Promise<{ device: Devic
 
 async function runInstall(job: Job, { device, file }: { device: Device; file: string }, opts: { launch: boolean; replace: boolean }) {
   job.install = { state: "installing", device: device.name, at: Date.now() };
-  publishJobs();
+  const stepId = `install-${(job.steps ?? []).filter((st) => st.id.startsWith("install-")).length + 1}`;
+  beginStep(job, stepId, `Install on ${device.name}`);
   const target = {
     platform: job.platform,
     mode: job.mode,
@@ -722,10 +759,12 @@ async function runInstall(job: Job, { device, file }: { device: Device; file: st
     await install(target, device, opts, (t) => log(job, t));
     job.install = { state: "installed", device: device.name, at: Date.now() };
     await log(job, `Installed on ${device.name}.\n`);
+    endStep(job, stepId, "succeeded", device.detail);
   } catch (e) {
     const replace = e instanceof NeedsReplace;
     job.install = { state: replace ? "needs-replace" : "failed", device: device.name, message: (e as Error).message, at: Date.now() };
     await log(job, `${replace ? "Needs replace" : "Install failed"}: ${(e as Error).message}\n`);
+    endStep(job, stepId, "failed", replace ? "needs replace" : (e as Error).message.split("\n")[0]);
   }
   if (job.archiveDir) await writeFile(path.join(job.archiveDir, "job.json"), JSON.stringify(job, null, 2)).catch(() => {});
   publishJobs();
