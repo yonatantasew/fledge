@@ -24,6 +24,7 @@ import { bumpValues, templateGithub, templateSlack, type ReleaseFacts } from "./
 import { connections, gatherFacts, notesRequest, publish, releases, validatePublish } from "./release.ts";
 import { answerApproval, getConversation, listConversations, newConversation, pendingApprovals, send as sendToAssistant } from "./ai/agent.ts";
 import { availableModels, connectorFor, listProviders, removeProvider, saveProvider, setActive } from "./ai/providers.ts";
+import { MCP_CONVERSATION, mcpServer } from "./ai/mcp.ts";
 import { structuredAnswer } from "./ai/structured.ts";
 import type { ToolContext } from "./ai/tools.ts";
 import { startable } from "./scheduler.ts";
@@ -736,11 +737,11 @@ function send(res: http.ServerResponse, status: number, body: unknown) {
   res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
 }
 
-async function readJson(req: http.IncomingMessage): Promise<unknown> {
+async function readJson(req: http.IncomingMessage, limit = 64 << 10): Promise<unknown> {
   let raw = "";
   for await (const c of req) {
     raw += c;
-    if (raw.length > 64 << 10) throw new Error("body too large");
+    if (raw.length > limit) throw new Error("body too large");
   }
   return raw ? JSON.parse(raw) : {};
 }
@@ -1041,6 +1042,7 @@ async function assistantApi(req: http.IncomingMessage, res: http.ServerResponse,
       return send(res, 200, { id: c.id });
     }
   }
+  if (url.pathname === "/api/ai/mcp/pending" && req.method === "GET") return send(res, 200, pendingApprovals(MCP_CONVERSATION));
   // Only the page answers an action: the model has no way to reach this route.
   const approvalRoute = /^\/api\/ai\/conversations\/([a-z0-9]+)\/approvals\/([^/]{1,200})$/.exec(url.pathname);
   if (approvalRoute && req.method === "POST") {
@@ -1070,6 +1072,40 @@ async function assistantApi(req: http.IncomingMessage, res: http.ServerResponse,
     }
   }
   send(res, 404, { error: "not found" });
+}
+
+const mcp = mcpServer(assistantContext, (event) => broadcast("assistant", { conversation: MCP_CONVERSATION, event }), {
+  version: JSON.parse(await readFile(path.join(TOOL_DIR, "package.json"), "utf8")).version,
+  page: `http://localhost:${PORT}`,
+});
+
+/** /mcp: the Model Context Protocol endpoint, under the same Host and Origin checks as the API. */
+async function mcpRoute(req: http.IncomingMessage, res: http.ServerResponse) {
+  const session = typeof req.headers["mcp-session-id"] === "string" ? req.headers["mcp-session-id"] : undefined;
+  if (req.method === "DELETE" && session) return send(res, mcp.end(session) ? 200 : 404, {});
+  if (req.method !== "POST") {
+    // No server-to-client stream: everything is answered on the POST.
+    res.writeHead(405, { allow: "POST, DELETE" }).end();
+    return;
+  }
+  const origin = req.headers.origin;
+  if (origin && !ALLOWED_HOSTS.has(origin.replace(/^https?:\/\//, ""))) return send(res, 403, { error: "bad origin" });
+  if (!req.headers["content-type"]?.startsWith("application/json")) return send(res, 415, { error: "JSON only" });
+  let msg: unknown;
+  try {
+    msg = await readJson(req, 1 << 20);
+  } catch {
+    return send(res, 400, { jsonrpc: "2.0", id: null, error: { code: -32700, message: "not valid JSON" } });
+  }
+  const gone = new AbortController();
+  res.on("close", () => !res.writableEnded && gone.abort());
+  const reply = await mcp.handle(msg, session, gone.signal);
+  if (reply.session) res.setHeader("mcp-session-id", reply.session);
+  if (reply.body === undefined) {
+    res.writeHead(reply.status).end();
+    return;
+  }
+  send(res, reply.status, reply.body);
 }
 
 const MIME: Record<string, string> = {
@@ -1107,6 +1143,7 @@ http
     if (!ALLOWED_HOSTS.has(req.headers.host ?? "")) return send(res, 403, { error: "bad host" });
     const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
     try {
+      if (url.pathname === "/mcp") return await mcpRoute(req, res);
       if (url.pathname.startsWith("/api/")) return await api(req, res, url);
       if (vite) return vite.middlewares(req, res);
       return await serveStatic(res, url);
