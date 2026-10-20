@@ -374,7 +374,7 @@ export function Assistant({ app, onClose }: { app: string | null; onClose: () =>
               <li>What's merged since the last release, and which tickets aren't ready for test?</li>
               <li>Which branches changed this week?</li>
             </ul>
-            <p className="text-xs">It can only read for now; actions such as branches and builds come next, each with your approval.</p>
+            <p className="text-xs">It can also create and push branches, queue and install builds, publish releases and update Jira. Each action waits for your approval here.</p>
           </div>
         ) : (
           items.map((item, i) =>
