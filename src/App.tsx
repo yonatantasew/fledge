@@ -1,6 +1,5 @@
 import {
   Add01Icon,
-  AiChat02Icon,
   Alert02Icon,
   FolderAddIcon,
   GitBranchIcon,
@@ -17,6 +16,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, projectsApi, useJobs, type Info, type ProjectSummary } from "@/api";
 import { AddAppDialog } from "@/components/AddAppDialog";
 import { Assistant } from "@/components/Assistant";
+import { Mascot } from "@/components/Mascot";
 import { OutsideApprovals } from "@/components/OutsideApprovals";
 import { BuildForm } from "@/components/BuildForm";
 import { ConfigDialog } from "@/components/ConfigDialog";
@@ -248,10 +248,6 @@ export function App() {
                 </>
               )}
               <FirebaseLogin />
-              <Button variant={assistant ? "secondary" : "outline"} className="h-9 gap-1.5" onClick={() => setAssistant(!assistant)}>
-                <HugeiconsIcon icon={AiChat02Icon} className="size-4" />
-                Assistant
-              </Button>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
@@ -335,12 +331,13 @@ export function App() {
           <>
             {/* Both tabs stay mounted (only hidden), so switching keeps loaded changes, drafted notes and form state.
                 Keyed by app, so each app starts with its own. */}
-            <main className={cn("mx-auto w-full max-w-[1500px] flex-1 p-4", view !== "release" && "hidden")}>
+            {/* pb-24: the end of the page can scroll clear of the mascot in the corner. */}
+            <main className={cn("mx-auto w-full max-w-[1500px] flex-1 p-4 pb-24", view !== "release" && "hidden")}>
               <ReleasePanel key={projectId} project={projectId} />
             </main>
             <main
               className={cn(
-                "mx-auto grid w-full max-w-[1500px] flex-1 grid-cols-[minmax(0,1fr)] gap-4 p-4 lg:grid-cols-[400px_minmax(0,1fr)]",
+                "mx-auto grid w-full max-w-[1500px] flex-1 grid-cols-[minmax(0,1fr)] gap-4 p-4 pb-24 lg:grid-cols-[400px_minmax(0,1fr)]",
                 view !== "build" && "hidden",
               )}
             >
@@ -356,6 +353,7 @@ export function App() {
         )}
 
         {assistant && <Assistant app={projectId} onClose={() => setAssistant(false)} />}
+        <Mascot open={assistant} onToggle={() => setAssistant(!assistant)} />
         <OutsideApprovals />
 
         <AddAppDialog

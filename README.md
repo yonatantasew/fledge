@@ -251,7 +251,9 @@ here** off, or every ticket gets two comments.
 
 ## Assistant
 
-**Assistant** in the header opens a chat about the app that's open. It looks
+The bird in the bottom-right corner is the assistant: click it for a chat
+about the app that's open. It flaps while the assistant works and hops, with a
+count, when an action is waiting for your answer. It looks
 things up with fledge's own tools instead of guessing: builds and their logs,
 checkouts, git history and branches, releases and the changes since the last
 one, Jira tickets (`acli`), connected devices, and the exact command a build
@@ -302,8 +304,8 @@ other MCP client:
 claude mcp add --transport http fledge http://localhost:4417/mcp
 ```
 
-Lookups answer straight away. An action shows up as a card in the corner of
-fledge's page, naming the client that asked, and waits for **Approve** there.
+Lookups answer straight away. An action shows up as a card in the bottom-left
+corner of fledge's page, naming the client that asked, and waits for **Approve** there.
 The client gets "declined" if you decline, if nobody answers within ten
 minutes, or as soon as it gives up waiting. fledge must be running.
 

@@ -1,6 +1,5 @@
 import {
   Add01Icon,
-  AiChat02Icon,
   Alert02Icon,
   ArrowDown01Icon,
   ArrowRight01Icon,
@@ -20,6 +19,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { AssistantSettings } from "./AssistantSettings";
+import { MascotBird } from "./Mascot";
 
 // What each tool call looks like in the conversation.
 const TOOL_LABEL: Record<string, string> = {
@@ -317,9 +317,10 @@ export function Assistant({ app, onClose }: { app: string | null; onClose: () =>
   }
 
   return (
-    <aside className="fixed top-0 right-0 z-30 flex h-svh w-full flex-col border-l bg-background shadow-xl sm:w-[440px]">
+    // A chat window rising from the mascot in the corner.
+    <aside className="fixed right-4 bottom-24 z-40 flex h-[min(680px,calc(100svh-7.5rem))] w-[calc(100vw-2rem)] origin-bottom-right animate-in flex-col overflow-hidden rounded-xl border bg-background shadow-2xl duration-150 fade-in-0 zoom-in-95 sm:w-[440px]">
       <div className="flex items-center gap-1.5 border-b px-3 py-2.5">
-        <HugeiconsIcon icon={AiChat02Icon} className="size-5" />
+        <MascotBird className="size-6" />
         <span className="text-sm font-semibold">Assistant</span>
         <Select value={current ?? undefined} onValueChange={setCurrent}>
           <SelectTrigger className="ml-2 h-8 min-w-0 flex-1 text-xs" aria-label="Conversation">

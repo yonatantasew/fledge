@@ -28,6 +28,12 @@
   --info: oklch(0.58 0.17 255);
   --log: oklch(0.18 0.005 285.823);
   --log-foreground: oklch(0.88 0.005 285);
+  --mascot-body: oklch(0.86 0.15 88);
+  --mascot-wing: oklch(0.77 0.15 72);
+  --mascot-belly: oklch(0.96 0.05 95);
+  --mascot-beak: oklch(0.7 0.17 48);
+  --mascot-ink: oklch(0.22 0.01 285);
+  --mascot-cheek: oklch(0.76 0.12 15);
 }
 
 .dark {
@@ -54,6 +60,12 @@
   --info: oklch(0.7 0.14 255);
   --log: oklch(0.11 0.004 285.823);
   --log-foreground: oklch(0.88 0.005 285);
+  --mascot-body: oklch(0.8 0.14 85);
+  --mascot-wing: oklch(0.7 0.14 70);
+  --mascot-belly: oklch(0.9 0.05 92);
+  --mascot-beak: oklch(0.68 0.16 48);
+  --mascot-ink: oklch(0.2 0.01 285);
+  --mascot-cheek: oklch(0.7 0.12 15);
 }
 
 @theme inline {
@@ -96,4 +108,48 @@
     @apply bg-background text-foreground antialiased;
     font-feature-settings: "cv11", "ss01";
   }
+}
+
+/* The assistant's mascot: bobs and blinks at rest, flaps while working, hops when an action waits for you. */
+@keyframes mascot-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-2px); }
+}
+@keyframes mascot-blink {
+  0%, 93%, 100% { transform: scaleY(1); }
+  95% { transform: scaleY(0.1); }
+}
+@keyframes mascot-flap-left {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(-22deg); }
+}
+@keyframes mascot-flap-right {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(22deg); }
+}
+@keyframes mascot-hop {
+  0%, 55%, 100% { transform: translateY(0); }
+  18% { transform: translateY(-8px); }
+  36% { transform: translateY(0); }
+  45% { transform: translateY(-3px); }
+}
+@keyframes mascot-dot {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; }
+}
+.mascot .mascot-bird { transform-box: fill-box; transform-origin: 50% 100%; animation: mascot-bob 3.2s ease-in-out infinite; }
+.mascot .mascot-tilt { transform-box: fill-box; transform-origin: 50% 100%; transition: transform 0.2s ease; }
+.mascot:hover .mascot-tilt, .mascot:focus-visible .mascot-tilt { transform: rotate(-8deg); }
+.mascot .mascot-eyes { transform-box: fill-box; transform-origin: 50% 50%; animation: mascot-blink 5s infinite; }
+.mascot .mascot-wing-left { transform-box: fill-box; transform-origin: 100% 15%; }
+.mascot .mascot-wing-right { transform-box: fill-box; transform-origin: 0% 15%; }
+.mascot[data-state="working"] .mascot-bird { animation-duration: 1.2s; }
+.mascot[data-state="working"] .mascot-wing-left { animation: mascot-flap-left 0.4s ease-in-out infinite; }
+.mascot[data-state="working"] .mascot-wing-right { animation: mascot-flap-right 0.4s ease-in-out infinite; }
+.mascot[data-state="waiting"] .mascot-bird { animation: mascot-hop 1.8s ease-in-out infinite; }
+.mascot-dot { animation: mascot-dot 1.2s ease-in-out infinite; }
+.mascot-dot:nth-child(2) { animation-delay: 0.2s; }
+.mascot-dot:nth-child(3) { animation-delay: 0.4s; }
+@media (prefers-reduced-motion: reduce) {
+  .mascot *, .mascot-dot { animation: none !important; transition: none !important; }
 }

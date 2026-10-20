@@ -437,3 +437,41 @@ export function useAssistantEvents(conversation: string | null, onEvent: (e: AiE
     });
   }, [conversation]);
 }
+
+/** What the assistant is doing across every conversation and MCP client: whether one is answering, and how many actions wait for an answer. */
+export function useAssistantActivity() {
+  const [busy, setBusy] = useState<Set<string>>(() => new Set());
+  const [waiting, setWaiting] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    const add = (s: Set<string>, id: string) => (s.has(id) ? s : new Set(s).add(id));
+    const drop = (s: Set<string>, id: string) => {
+      if (!s.has(id)) return s;
+      const next = new Set(s);
+      next.delete(id);
+      return next;
+    };
+    // Whatever ends while the first look is in flight must not come back from it.
+    const ended = new Set<string>();
+    const off = subscribe("assistant", (data) => {
+      const { conversation, event } = data as { conversation: string; event: AiEvent };
+      if (event.type === "start") setBusy((s) => add(s, conversation));
+      else if (event.type === "done" || event.type === "error") (ended.add(conversation), setBusy((s) => drop(s, conversation)));
+      else if (event.type === "approval") setWaiting((s) => add(s, event.id));
+      else if (event.type === "approval_result") (ended.add(event.id), setWaiting((s) => drop(s, event.id)));
+    });
+    let live = true;
+    void (async () => {
+      const [list, mcp] = await Promise.all([aiApi.conversations(), aiApi.mcpPending()]);
+      const answering = list.filter((c) => c.busy).map((c) => c.id);
+      const pending = (await Promise.all(answering.map((id) => aiApi.conversation(id).then((c) => c.pending)))).flat();
+      if (!live) return;
+      setBusy((s) => new Set([...s, ...answering.filter((id) => !ended.has(id))]));
+      setWaiting((s) => new Set([...s, ...[...mcp, ...pending].map((a) => a.id).filter((id) => !ended.has(id))]));
+    })().catch(() => {});
+    return () => {
+      live = false;
+      off();
+    };
+  }, []);
+  return { working: busy.size > 0, waiting: waiting.size };
+}
