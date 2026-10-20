@@ -6,7 +6,8 @@ Pick the platforms, flavors and build types (debug / profile / release). fledge
 queues every combination, runs one Android and one iOS build at a time with
 live logs, installs finished builds on a connected phone, and cuts the release:
 version bump, GitHub (pre-)release, Jira updates, and notes drafted with Claude.
-An assistant panel answers questions about builds, branches and releases, using
+An assistant panel answers questions about builds, branches and releases, and
+creates branches, queues builds and installs them once you approve, using
 whichever model you give it.
 
 ## Install
@@ -252,8 +253,22 @@ here** off, or every ticket gets two comments.
 things up with fledge's own tools instead of guessing: builds and their logs,
 checkouts, git history and branches, releases and the changes since the last
 one, Jira tickets (`acli`), connected devices, and the exact command a build
-would run. For now it only reads; asked to change something, it says what it
-would do.
+would run.
+
+It can also act, and every action waits for you. The panel shows a card with
+exactly what will happen, and nothing runs until you press **Approve**:
+
+- **Create a branch** from `origin/<base branch>` (fetched first) or any ref,
+  optionally switching a checkout with no uncommitted changes to it. It isn't
+  pushed and doesn't track the branch it came from.
+- **Push a branch** to `origin` with upstream set. Never forced; the release
+  base branch, `main` and `master` are refused.
+- **Queue builds**, **cancel a build**, and **install a build** on a connected
+  phone. The card says when an environment asks for confirmation and when an
+  install would erase the app's data.
+
+Declining tells the model not to retry. Releases and Jira changes aren't
+actions yet; asked for one, it says what it would do.
 
 Add models with the gear in the panel:
 
@@ -299,7 +314,8 @@ The server listens on `127.0.0.1` only. It rejects requests whose `Host` or
 `Origin` isn't fledge, which blocks DNS rebinding and cross-site POSTs. Commands
 are built from fixed lists and the checked `fledge.json`, never through a
 shell. The assistant's tools check every input before running, and refuse a
-git ref that starts with `-`. A device ID must match a device that's connected at that moment, and
+git ref that starts with `-`. Its actions run only after an answer from the
+page; the model has no way to approve them. A device ID must match a device that's connected at that moment, and
 Publish refuses a tag or branch that already exists.
 
 ## Development
