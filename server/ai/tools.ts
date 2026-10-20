@@ -8,6 +8,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import type { ReleaseFacts } from "../notes.ts";
 import type { ToolDef } from "./types.ts";
 
 const run = promisify(execFile);
@@ -50,6 +51,15 @@ export interface ToolContext {
   cancelBuild(id: string): void;
   /** Checks a build can go on the device now; install() runs it and reports how it went. Throws otherwise. */
   prepareInstall(buildId: string, deviceId: string): Promise<{ device: string; install(opts: { launch: boolean; replace: boolean }): Promise<unknown> }>;
+  /** The next release: its facts without the excluded PRs (and version bumps), and the template notes. Slow. */
+  releaseDraft(
+    appId: string,
+    since: string | null,
+    prerelease: boolean,
+    exclude: number[],
+  ): Promise<{ facts: ReleaseFacts; templates: { slack: string; github: string }; baseBranch: string; bumpBranch: string; jira: { from: string; to: string } | null }>;
+  /** Cuts the release as the Release tab does; throws if one is already being published. */
+  publishRelease(appId: string, req: { facts: ReleaseFacts; githubNotes: string; prerelease: boolean; updateJira: boolean; dryRun: boolean }): Promise<unknown>;
 }
 
 /** What an action will do, shown to the developer to approve or decline. */
@@ -110,7 +120,24 @@ async function needBranchName(cwd: string, name: unknown) {
   return name;
 }
 
+const KEY = /^[A-Z][A-Z0-9]+-\d+$/;
+
+async function jiraTicket(key: string) {
+  if (!KEY.test(key)) throw new Error("not a ticket key like PROJ-123");
+  const { stdout } = await run("acli", ["jira", "workitem", "view", key, "--fields", "summary,status,assignee,description", "--json"], { maxBuffer: 8 << 20, timeout: 60_000 });
+  const t = JSON.parse(stdout) as { key: string; fields: { summary?: string; status?: { name?: string }; assignee?: { displayName?: string }; description?: unknown } };
+  const text = (n: unknown): string =>
+    !n || typeof n !== "object" ? "" : Array.isArray(n) ? n.map(text).join("") : "text" in n ? String((n as { text: unknown }).text) : "content" in n ? text((n as { content: unknown }).content) + "\n" : "";
+  return { key: t.key, summary: t.fields.summary, status: t.fields.status?.name, assignee: t.fields.assignee?.displayName, description: text(t.fields.description).trim().slice(0, 4000) };
+}
+
 const commitLine = (cwd: string, ref: string) => git(cwd, ["log", "-1", "--format=%h %s", ref, "--"]);
+
+function sinceTag(since: unknown) {
+  if (since === undefined) return null;
+  if (typeof since !== "string" || !/^v[\w.+-]+$/.test(since)) throw new Error("since must be a tag like v1.3.1+3");
+  return since;
+}
 
 async function baseBranch(ctx: ToolContext, appId: string) {
   const a = await ctx.app(appId);
@@ -252,13 +279,7 @@ const TOOLS: Tool[] = [
       schema: obj({ key: str("The ticket key, e.g. PROJ-123.") }, ["key"]),
     },
     async run(i) {
-      const key = String(i.key ?? "");
-      if (!/^[A-Z][A-Z0-9]+-\d+$/.test(key)) throw new Error("not a ticket key like PROJ-123");
-      const { stdout } = await run("acli", ["jira", "workitem", "view", key, "--fields", "summary,status,assignee,description", "--json"], { maxBuffer: 8 << 20, timeout: 60_000 });
-      const t = JSON.parse(stdout) as { key: string; fields: { summary?: string; status?: { name?: string }; assignee?: { displayName?: string }; description?: unknown } };
-      const text = (n: unknown): string =>
-        !n || typeof n !== "object" ? "" : Array.isArray(n) ? n.map(text).join("") : "text" in n ? String((n as { text: unknown }).text) : "content" in n ? text((n as { content: unknown }).content) + "\n" : "";
-      return { key: t.key, summary: t.fields.summary, status: t.fields.status?.name, assignee: t.fields.assignee?.displayName, description: text(t.fields.description).trim().slice(0, 4000) };
+      return jiraTicket(String(i.key ?? ""));
     },
   },
   {
@@ -284,6 +305,33 @@ const TOOLS: Tool[] = [
     },
   },
 
+  {
+    def: {
+      name: "release_notes",
+      description:
+        "The next release's notes as the app's templates render them (channel note and GitHub body), with its version, range and PRs. Rewrite the item titles for testers when asked; publish_release takes the GitHub body. Slow (about 20 seconds).",
+      schema: obj(
+        {
+          app: APP,
+          since: str("The release to start from, e.g. v1.3.1+3 (default: the latest)."),
+          prerelease: bool("A pre-release (default true)."),
+          exclude_prs: { type: "array", description: "PR numbers to leave out.", items: num("A PR number.") },
+        },
+        ["app"],
+      ),
+    },
+    async run(i, ctx) {
+      const a = await needApp(ctx, i.app);
+      const d = await ctx.releaseDraft(a.id, sinceTag(i.since), i.prerelease !== false, (i.exclude_prs as number[] | undefined) ?? []);
+      return {
+        version: d.facts.version,
+        previous: d.facts.previous?.tag ?? null,
+        prs: d.facts.prs.map((pr) => ({ number: pr.number, title: pr.title, tickets: pr.tickets, dri: pr.dri })),
+        channelNote: d.templates.slack,
+        githubNotes: d.templates.github,
+      };
+    },
+  },
   // ------------------------------------------------------------------ actions
   {
     def: {
@@ -466,6 +514,95 @@ const TOOLS: Tool[] = [
           opts.launch ? "Opens the app afterwards" : "Doesn't open the app",
         ],
         run: () => ready.install(opts),
+      };
+    },
+  },
+  {
+    def: {
+      name: "publish_release",
+      description:
+        "Cut the next release as the Release tab does (needs the developer's approval): commit the version bump in a temporary worktree, push its branch, open the bump PR, create the GitHub (pre-)release on that commit, and optionally move and comment the Jira tickets. dry_run stops before anything leaves the Mac.",
+      schema: obj(
+        {
+          app: APP,
+          prerelease: bool("A pre-release (true) or the latest release (false)."),
+          update_jira: bool("Move the tickets and comment the release link on them (only if the app's release config has Jira)."),
+          since: str("The release to start from (default: the latest)."),
+          exclude_prs: { type: "array", description: "PR numbers to leave out.", items: num("A PR number.") },
+          github_notes: str("The GitHub release body (default: the template's)."),
+          dry_run: bool("Make the bump commit locally and stop (default false)."),
+        },
+        ["app", "prerelease", "update_jira"],
+      ),
+    },
+    async prepare(i, ctx) {
+      const a = await needApp(ctx, i.app);
+      const prerelease = i.prerelease === true;
+      const d = await ctx.releaseDraft(a.id, sinceTag(i.since), prerelease, (i.exclude_prs as number[] | undefined) ?? []);
+      const notes = typeof i.github_notes === "string" && i.github_notes.trim() ? i.github_notes : d.templates.github;
+      if (notes.length > 100_000) throw new Error("the notes are too long");
+      const dryRun = i.dry_run === true;
+      const updateJira = i.update_jira === true && !!d.jira;
+      const keys = [...new Set(d.facts.prs.flatMap((pr) => pr.tickets))];
+      const moving = d.jira ? keys.filter((k) => d.facts.tickets[k]?.status === d.jira!.from) : [];
+      const tag = `v${d.facts.version}`;
+      return {
+        title: `${dryRun ? "Dry run: " : ""}Publish ${tag} of ${a.name} as ${prerelease ? "a pre-release" : "the latest release"}`,
+        details: [
+          `${d.facts.prs.length} PR(s) since ${d.facts.previous?.tag ?? "the start"}: ${d.facts.prs.map((pr) => `#${pr.number}`).join(", ") || "none"}`,
+          ...(dryRun
+            ? [`Makes the bump commit on ${d.baseBranch} @ ${d.facts.head.sha.slice(0, 8)} in a temporary worktree, then stops: nothing is pushed, published or changed in Jira`]
+            : [
+                `Bump commit on ${d.baseBranch} @ ${d.facts.head.sha.slice(0, 8)}, pushed as ${d.bumpBranch} with a PR into ${d.baseBranch}`,
+                `GitHub ${prerelease ? "pre-release" : "release"} ${tag} on that commit, notes ${notes === d.templates.github ? "from the template" : `as written (${notes.length} characters)`}`,
+                updateJira
+                  ? `Jira: moves ${moving.length} of ${keys.length} ticket(s) ${d.jira!.from} → ${d.jira!.to} and comments the release link on all ${keys.length}`
+                  : "Jira is left alone",
+              ]),
+        ],
+        run: () => ctx.publishRelease(a.id, { facts: d.facts, githubNotes: notes, prerelease, updateJira, dryRun }),
+      };
+    },
+  },
+  {
+    def: {
+      name: "jira_comment",
+      description: "Add a comment to a Jira ticket (needs the developer's approval).",
+      schema: obj({ key: str("The ticket key, e.g. PROJ-123."), text: str("The comment, plain text.") }, ["key", "text"]),
+    },
+    async prepare(i) {
+      const t = await jiraTicket(String(i.key));
+      const text = String(i.text).trim();
+      if (!text) throw new Error("the comment is empty");
+      if (text.length > 5000) throw new Error("the comment is too long (at most 5000 characters)");
+      return {
+        title: `Comment on ${t.key}`,
+        details: [`${t.key}: ${t.summary ?? ""} (${t.status ?? "no status"})`, `“${text.length > 400 ? `${text.slice(0, 400)}…` : text}”`],
+        async run() {
+          await run("acli", ["jira", "workitem", "comment", "create", "--key", t.key, "--body", text], { timeout: 60_000 });
+          return `Commented on ${t.key}.`;
+        },
+      };
+    },
+  },
+  {
+    def: {
+      name: "jira_transition",
+      description: "Move a Jira ticket to another status (needs the developer's approval). The status must be one the ticket's workflow allows next.",
+      schema: obj({ key: str("The ticket key, e.g. PROJ-123."), status: str("The status to move it to, exactly as Jira names it.") }, ["key", "status"]),
+    },
+    async prepare(i) {
+      const t = await jiraTicket(String(i.key));
+      const status = String(i.status).trim();
+      if (!status || status.length > 80) throw new Error("that isn't a status name");
+      if (status.toLowerCase() === (t.status ?? "").toLowerCase()) throw new Error(`${t.key} is already ${t.status}`);
+      return {
+        title: `Move ${t.key} to ${status}`,
+        details: [`${t.key}: ${t.summary ?? ""}`, `${t.status ?? "no status"} → ${status}`],
+        async run() {
+          await run("acli", ["jira", "workitem", "transition", "--key", t.key, "--status", status, "--yes"], { timeout: 60_000 });
+          return `${t.key} is now ${status}.`;
+        },
       };
     },
   },

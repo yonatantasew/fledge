@@ -78,8 +78,9 @@ function system(app: string | null) {
     `Today is ${new Date().toISOString().slice(0, 10)}.`,
     app ? `The app open in fledge is "${app}"; questions without an app are about it.` : "No app is open in fledge right now.",
     "Use the tools to look things up instead of guessing: builds and their logs, checkouts, git history, releases, tickets, devices, and the exact build commands from the app's config.",
-    "You can also act: create a local branch, push a branch, queue builds, cancel a build, install a build on a phone. Each action is shown to the developer, who approves or declines it, so call the tool directly instead of asking for permission in text. If one is declined, don't retry it; ask what they'd like instead.",
-    "Branches stay local until the developer asks for them to be pushed. Name new branches like the repository's existing ones (check git_branches). Releases and Jira changes aren't available yet; say what you would do.",
+    "You can also act: create a local branch, push a branch, queue builds, cancel a build, install a build on a phone, publish a release, comment on or move a Jira ticket. Each action is shown to the developer, who approves or declines it, so call the tool directly instead of asking for permission in text. If one is declined, don't retry it; ask what they'd like instead.",
+    "Branches stay local until the developer asks for them to be pushed. Name new branches like the repository's existing ones (check git_branches).",
+    "For a release, read release_notes first. When asked to improve the notes, rewrite the item titles for testers (plain, specific, at most ~14 words, no ticket-key prefix), keep the template's structure and every SHA, PR number, version and date exactly, and show the result before publishing it.",
     "Answer briefly and concretely. Name builds, commits, branches and tickets by their ids so the developer can find them. If a tool fails, say what failed.",
   ].join("\n");
 }

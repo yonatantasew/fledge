@@ -20,14 +20,14 @@ import { promisify } from "node:util";
 import { artifactPath, parseRequest, planBuild, resolveFlutter, XCARCHIVE_PATH, type PlannedBuild, type SkippedBuild } from "./commands.ts";
 import { generateCommands, tokenize } from "./templates.ts";
 import { cancelLogin, firebaseStatus, onFirebaseChange, startLogin } from "./firebase.ts";
-import { templateGithub, templateSlack, type ReleaseFacts } from "./notes.ts";
+import { bumpValues, templateGithub, templateSlack, type ReleaseFacts } from "./notes.ts";
 import { connections, gatherFacts, notesRequest, publish, releases, validatePublish } from "./release.ts";
 import { answerApproval, getConversation, listConversations, newConversation, pendingApprovals, send as sendToAssistant } from "./ai/agent.ts";
 import { availableModels, connectorFor, listProviders, removeProvider, saveProvider, setActive } from "./ai/providers.ts";
 import { structuredAnswer } from "./ai/structured.ts";
 import type { ToolContext } from "./ai/tools.ts";
 import { startable } from "./scheduler.ts";
-import { flavorOf, parseConfig, type FledgeConfig } from "./config.ts";
+import { fill, flavorOf, parseConfig, type FledgeConfig } from "./config.ts";
 import { detectProject } from "./detect.ts";
 import {
   addProject,
@@ -577,6 +577,39 @@ const assistantContext: ToolContext = {
       skipped: r.skipped.map((s) => `${s.flavor} ${s.mode} ${s.platform}: ${s.reason}`),
       queue: () => enqueue(r).map((j) => j.id),
     };
+  },
+  async releaseDraft(id, since, prerelease, exclude) {
+    const p = await getProject(id);
+    const r = p?.config?.release;
+    if (!p || !r) throw new Error("releases aren't set up for this app");
+    const all = await gatherFacts(p, since ?? (await releases(p))[0]?.tag ?? null, prerelease);
+    // As the Release tab does: version-bump PRs never go in the notes.
+    const facts = { ...all, prerelease, prs: all.prs.filter((pr) => !pr.versionBump && !exclude.includes(pr.number)) };
+    return {
+      facts,
+      templates: { slack: templateSlack(facts), github: templateGithub(facts) },
+      baseBranch: r.github.baseBranch,
+      bumpBranch: fill(r.versionBump.branch, bumpValues(facts)),
+      jira: r.jira ? { from: r.jira.fromStatus, to: r.jira.toStatus } : null,
+    };
+  },
+  async publishRelease(id, req) {
+    const p = await getProject(id);
+    if (!p?.config?.release) throw new Error("releases aren't set up for this app");
+    if (publishing) throw new Error("a release is already being published");
+    const checked = validatePublish(req);
+    if ("error" in checked) throw new Error(checked.error);
+    publishing = true;
+    // The Release tab shows the same live log.
+    const say = (line: string) => broadcast("release", { project: p.id, line });
+    try {
+      return await publish(p, checked, say);
+    } catch (e) {
+      say(`Failed: ${(e as Error).message}`);
+      throw e;
+    } finally {
+      publishing = false;
+    }
   },
   cancelBuild(id) {
     const job = jobs.find((j) => j.id === id);

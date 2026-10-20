@@ -25,6 +25,10 @@ const ctx: ToolContext = {
   prepareInstall: async () => {
     throw new Error("no devices");
   },
+  releaseDraft: async () => {
+    throw new Error("releases aren't set up for this app");
+  },
+  publishRelease: async () => ({}),
 };
 
 test("every tool has a strict object schema the providers accept", () => {

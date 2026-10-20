@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
 import { answerApproval, newConversation, pendingApprovals, send, type AgentEvent } from "./agent.ts";
 import { inputProblem, isAction, runTool, toolDefs, type Approval, type ToolContext } from "./tools.ts";
+import type { ReleaseFacts } from "../notes.ts";
 import type { Connector, TurnResult } from "./types.ts";
 
 // A real repository with a bare "origin", so branches and pushes run real git.
@@ -24,6 +25,29 @@ git(root, "commit", "-qm", "first");
 git(root, "remote", "add", "origin", origin);
 git(root, "push", "-q", "origin", "main");
 git(root, "fetch", "-q", "origin");
+
+// A fake acli: `view` answers with a ticket, anything else is recorded.
+const bin = path.join(dir, "bin");
+const acliLog = path.join(dir, "acli.log");
+execFileSync("mkdir", [bin]);
+writeFileSync(
+  path.join(bin, "acli"),
+  `#!/bin/sh\nif [ "$3" = "view" ]; then echo '{"key":"'$4'","fields":{"summary":"Fix the thing","status":{"name":"In Review"}}}'; else printf '%s\\n' "$*" >> "${acliLog}"; fi\n`,
+);
+chmodSync(path.join(bin, "acli"), 0o755);
+process.env.PATH = `${bin}:${process.env.PATH}`;
+
+const facts = {
+  version: "1.4.0+2",
+  previous: { tag: "v1.4.0+1" },
+  head: { ref: "main", sha: "0123456789abcdef0123456789abcdef01234567" },
+  prs: [
+    { number: 7, title: "Fix the thing", tickets: ["PROJ-1"], dri: "A", versionBump: false },
+    { number: 9, title: "Add a page", tickets: ["PROJ-2"], dri: "B", versionBump: false },
+  ],
+  tickets: { "PROJ-1": { status: "In Review" }, "PROJ-2": { status: "In Progress" } },
+} as unknown as ReleaseFacts;
+const published: unknown[] = [];
 
 const queued: unknown[] = [];
 const cancelled: string[] = [];
@@ -53,13 +77,24 @@ const ctx: ToolContext = {
     if (device !== "phone1") throw new Error("that device is not connected");
     return { device: "Pixel (Android 16)", install: async (opts) => ({ state: "installed", ...opts }) };
   },
+  async releaseDraft(_app, _since, prerelease, exclude) {
+    const f = { ...facts, prerelease, prs: facts.prs.filter((pr) => !exclude.includes(pr.number)) };
+    return { facts: f, templates: { slack: "slack", github: "template notes" }, baseBranch: "main", bumpBranch: "chore/bump-1.4.0-2", jira: { from: "In Review", to: "Ready for test" } };
+  },
+  async publishRelease(_app, req) {
+    published.push(req);
+    return { tag: `v${req.facts.version}` };
+  },
 };
 
 const yes = async () => true;
 const no = async () => false;
 
 test("actions are marked, and lookups aren't", () => {
-  for (const name of ["create_branch", "push_branch", "start_builds", "cancel_build", "install_build"]) assert.ok(isAction(name), name);
+  for (const name of ["create_branch", "push_branch", "start_builds", "cancel_build", "install_build", "publish_release", "jira_comment", "jira_transition"]) {
+    assert.ok(isAction(name), name);
+  }
+  assert.ok(!isAction("release_notes"));
   assert.ok(!isAction("git_log"));
 });
 
@@ -169,4 +204,49 @@ test("the loop waits for the page's answer, and only the right conversation can 
   const tool = c.messages.find((m) => m.role === "tool");
   assert.equal(tool?.role === "tool" && tool.results[0].approval?.approved, false);
   assert.equal(pendingApprovals(c.id).length, 0);
+});
+
+test("publish_release describes the whole release and publishes exactly that", async () => {
+  let asked: Approval | undefined;
+  const r = await runTool(
+    "publish_release",
+    { app: "demo", prerelease: true, update_jira: true, exclude_prs: [9], github_notes: "Rewritten notes" },
+    ctx,
+    async (a) => ((asked = a), true),
+  );
+  assert.equal(r.isError, false, r.content);
+  assert.equal(asked?.title, "Publish v1.4.0+2 of demo as a pre-release");
+  assert.ok(asked?.details.includes("1 PR(s) since v1.4.0+1: #7"));
+  assert.ok(asked?.details.some((d) => d.includes("chore/bump-1.4.0-2") && d.includes("0123456")));
+  assert.ok(asked?.details.some((d) => d.includes("as written (15 characters)")));
+  assert.ok(asked?.details.includes("Jira: moves 1 of 1 ticket(s) In Review → Ready for test and comments the release link on all 1"));
+  const req = published[0] as { githubNotes: string; prerelease: boolean; updateJira: boolean; dryRun: boolean; facts: ReleaseFacts };
+  assert.deepEqual([req.githubNotes, req.prerelease, req.updateJira, req.dryRun], ["Rewritten notes", true, true, false]);
+  assert.deepEqual(req.facts.prs.map((pr) => pr.number), [7]);
+
+  const dry = await runTool("publish_release", { app: "demo", prerelease: false, update_jira: false, dry_run: true }, ctx, async (a) => ((asked = a), false));
+  assert.equal(dry.approval?.approved, false);
+  assert.equal(asked?.title, "Dry run: Publish v1.4.0+2 of demo as the latest release");
+  assert.ok(asked?.details.some((d) => d.includes("then stops: nothing is pushed")));
+  assert.ok(!asked?.details.some((d) => d.includes("pushed as")));
+  assert.equal(published.length, 1, "declined: nothing published");
+});
+
+test("Jira actions show the ticket, then run acli with exactly what was approved", async () => {
+  let asked: Approval | undefined;
+  const c = await runTool("jira_comment", { key: "PROJ-1", text: "Fixed in v1.4.0+2" }, ctx, async (a) => ((asked = a), true));
+  assert.equal(c.isError, false, c.content);
+  assert.equal(asked?.title, "Comment on PROJ-1");
+  assert.ok(asked?.details.includes("PROJ-1: Fix the thing (In Review)"));
+  const t = await runTool("jira_transition", { key: "PROJ-1", status: "Ready for test" }, ctx, async (a) => ((asked = a), true));
+  assert.equal(t.isError, false, t.content);
+  assert.ok(asked?.details.includes("In Review → Ready for test"));
+  assert.deepEqual(readFileSync(acliLog, "utf8").trim().split("\n"), [
+    "jira workitem comment create --key PROJ-1 --body Fixed in v1.4.0+2",
+    "jira workitem transition --key PROJ-1 --status Ready for test --yes",
+  ]);
+
+  assert.match((await runTool("jira_transition", { key: "PROJ-1", status: "in review" }, ctx, yes)).content, /already In Review/);
+  assert.match((await runTool("jira_comment", { key: "proj-1; rm", text: "x" }, ctx, yes)).content, /not a ticket key/);
+  assert.match((await runTool("jira_comment", { key: "PROJ-1", text: "   " }, ctx, yes)).content, /empty/);
 });

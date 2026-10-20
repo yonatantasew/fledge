@@ -35,11 +35,15 @@ const TOOL_LABEL: Record<string, string> = {
   changes_since_release: "Gathered changes since a release",
   jira_ticket: "Looked up a ticket",
   planned_command: "Worked out a build command",
+  release_notes: "Rendered the release notes",
   create_branch: "Create a branch",
   push_branch: "Push a branch",
   start_builds: "Queue builds",
   cancel_build: "Cancel a build",
   install_build: "Install a build",
+  publish_release: "Publish a release",
+  jira_comment: "Comment on a ticket",
+  jira_transition: "Move a ticket",
 };
 
 type Approval = { title: string; details: string[]; state: "pending" | "approved" | "declined" };
