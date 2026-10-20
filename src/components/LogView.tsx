@@ -11,6 +11,9 @@ import { CommandLine } from "./CommandLine";
 
 const TAIL = 3000;
 
+/** A slice of the log: one step's output. */
+export type LogRange = { start: number; end?: number; label: string };
+
 function lineClass(line: string) {
   if (/(^|\s)(error|ERROR|FAILURE|Error:|Exception|BUILD FAILED)/.test(line)) return "text-red-400";
   if (/(^|\s)(warning|WARNING|Warning:)/.test(line)) return "text-amber-300";
@@ -19,7 +22,7 @@ function lineClass(line: string) {
   return "";
 }
 
-export function LogView({ job, log }: { job: Job | undefined; log: string | undefined }) {
+export function LogView({ job, log, range = null, onShowAll }: { job: Job | undefined; log: string | undefined; range?: LogRange | null; onShowAll?: () => void }) {
   const flavorLabel = useFlavorLabel();
   const ref = useRef<HTMLDivElement>(null);
   const [stick, setStick] = useState(true);
@@ -28,9 +31,9 @@ export function LogView({ job, log }: { job: Job | undefined; log: string | unde
   useEffect(() => {
     setStick(true);
     setAll(false);
-  }, [job?.id]);
+  }, [job?.id, range?.start]);
 
-  const lines = useMemo(() => (log ?? "").split("\n"), [log]);
+  const lines = useMemo(() => (range ? (log ?? "").slice(range.start, range.end) : (log ?? "")).split("\n"), [log, range?.start, range?.end]);
   const hidden = all ? 0 : Math.max(0, lines.length - TAIL);
   const shown = hidden ? lines.slice(hidden) : lines;
 
@@ -46,7 +49,14 @@ export function LogView({ job, log }: { job: Job | undefined; log: string | unde
           Log
         </CardTitle>
         <CardDescription className="truncate">
-          {job
+          {range ? (
+            <>
+              {range.label} only ·{" "}
+              <button className="underline-offset-2 hover:underline" onClick={onShowAll}>
+                show the whole log
+              </button>
+            </>
+          ) : job
             ? `${job.platform === "ios" ? "iOS" : "Android"} · ${flavorLabel(job.flavor)} · ${MODE_LABEL[job.mode]}${
                 job.artifactFile ? ` → ${job.artifactFile.split("/").slice(-2).join("/")}` : ""
               }`

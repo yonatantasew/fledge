@@ -21,8 +21,8 @@ import { OutsideApprovals } from "@/components/OutsideApprovals";
 import { BuildForm } from "@/components/BuildForm";
 import { ConfigDialog } from "@/components/ConfigDialog";
 import { FirebaseLogin } from "@/components/FirebaseLogin";
-import { JobList } from "@/components/JobList";
-import { LogView } from "@/components/LogView";
+import { BuildDetails } from "@/components/BuildDetails";
+import { BuildTiles } from "@/components/BuildTiles";
 import { ReleasePanel } from "@/components/ReleasePanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -344,9 +344,13 @@ export function App() {
               <div className="lg:sticky lg:top-[73px] lg:max-h-[calc(100svh-89px)] lg:overflow-y-auto">
                 <BuildForm key={projectId} projectId={projectId} checkout={checkout} />
               </div>
-              <div className="grid min-h-0 grid-cols-[minmax(0,1fr)] gap-4 lg:h-[calc(100svh-89px)] lg:grid-rows-[minmax(0,2fr)_minmax(0,3fr)]">
-                <JobList jobs={jobs} selected={selected} onSelect={setSelected} showProject={(projects?.length ?? 0) > 1} />
-                <LogView job={job} log={selected ? logs[selected] : undefined} />
+              {/* Argo CD style: the builds as tiles, or one build's steps and log. */}
+              <div className="grid min-h-0 grid-cols-[minmax(0,1fr)] lg:h-[calc(100svh-89px)] lg:grid-rows-[minmax(0,1fr)]">
+                {job ? (
+                  <BuildDetails job={job} log={logs[job.id]} onBack={() => setSelected(null)} />
+                ) : (
+                  <BuildTiles jobs={jobs} onSelect={setSelected} showProject={(projects?.length ?? 0) > 1} />
+                )}
               </div>
             </main>
           </>

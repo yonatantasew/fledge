@@ -52,6 +52,19 @@ export interface Job {
   verified?: Record<string, string>;
   error?: string;
   install?: { state: "installing" | "installed" | "failed" | "needs-replace"; device: string; message?: string; at: number };
+  steps?: BuildStep[]; // missing on builds recorded before steps were
+}
+
+/** A stage of a build; logStart/logEnd mark its output in the build's log. */
+export interface BuildStep {
+  id: string; // "pub" | "build" | "collect" | "install-<n>"
+  label: string;
+  state: "running" | "succeeded" | "failed" | "skipped" | "cancelled";
+  detail?: string;
+  logStart: number;
+  logEnd?: number;
+  startedAt: number;
+  endedAt?: number;
 }
 
 export interface Device {

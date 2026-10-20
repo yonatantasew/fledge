@@ -162,6 +162,15 @@ same way in review.
 
 ## Builds
 
+Builds show as tiles, in the style of Argo CD: a coloured edge for the status,
+the facts in rows (status, device, source, checkout, version), and the actions
+along the bottom. The chips above them filter by status. Click a tile for the
+build's details: its steps as a tree, from the source through `pub get`, the
+build and the artifact to each phone it was installed on, each with its state
+and time. Click a step to see only its part of the log. Builds made before
+0.8.0 recorded no steps, so their tree is worked out from how they ended and
+shows the whole log.
+
 - **The exact commands are in the config.** Each build output has its command
   line under `commands` (see [Build commands](#build-commands)); each finished
   build shows the command it ran above its log, with a copy button.
