@@ -107,6 +107,62 @@ export const api = {
   log: async (id: string): Promise<string> => (await fetch(`/api/jobs/${id}/log`)).text(),
 };
 
+// ------------------------------------------------------------------- events
+
+// One event stream for the whole page. Browsers keep at most six connections
+// open per host, and every EventSource holds one for as long as it lives, so
+// each hook subscribing its own would soon leave none for ordinary requests.
+let source: EventSource | null = null;
+const listeners = new Map<string, Set<(data: unknown) => void>>();
+const connection = new Set<(connected: boolean) => void>();
+
+function stream() {
+  if (source) return source;
+  source = new EventSource("/api/events");
+  source.onopen = () => connection.forEach((f) => f(true));
+  source.onerror = () => connection.forEach((f) => f(false));
+  for (const type of listeners.keys()) listen(type);
+  return source;
+}
+
+function listen(type: string) {
+  source?.addEventListener(type, (e) => {
+    const data = JSON.parse((e as MessageEvent).data) as unknown;
+    listeners.get(type)?.forEach((f) => f(data));
+  });
+}
+
+function release() {
+  if (source && ![...listeners.values()].some((l) => l.size) && !connection.size) {
+    source.close();
+    source = null;
+  }
+}
+
+/** Calls `fn` with each server event of `type` until the returned function is called. */
+export function subscribe(type: string, fn: (data: unknown) => void) {
+  if (!listeners.has(type)) {
+    listeners.set(type, new Set());
+    listen(type);
+  }
+  listeners.get(type)!.add(fn);
+  stream();
+  return () => {
+    listeners.get(type)!.delete(fn);
+    release();
+  };
+}
+
+/** Reports whether the event stream is connected, until the returned function is called. */
+export function watchConnection(fn: (connected: boolean) => void) {
+  connection.add(fn);
+  if (stream().readyState === EventSource.OPEN) fn(true);
+  return () => {
+    connection.delete(fn);
+    release();
+  };
+}
+
 /**
  * Live job list plus the logs of whichever jobs we have loaded. Chunks carry
  * the offset they start at, so a chunk that overlaps a fetched log is trimmed
@@ -125,12 +181,10 @@ export function useJobs() {
   }, []);
 
   useEffect(() => {
-    const es = new EventSource("/api/events");
-    es.onopen = () => setConnected(true);
-    es.onerror = () => setConnected(false);
-    es.addEventListener("jobs", (e) => setJobs(JSON.parse((e as MessageEvent).data)));
-    es.addEventListener("log", (e) => {
-      const { id, chunk, offset } = JSON.parse((e as MessageEvent).data) as { id: string; chunk: string; offset: number };
+    const unwatch = watchConnection(setConnected);
+    const offJobs = subscribe("jobs", (data) => setJobs(data as Job[]));
+    const offLog = subscribe("log", (data) => {
+      const { id, chunk, offset } = data as { id: string; chunk: string; offset: number };
       const have = logsRef.current[id];
       if (have === undefined) {
         if (offset === 0) setLogs((l) => ({ ...l, [id]: (l[id] ?? "") + chunk }));
@@ -143,7 +197,11 @@ export function useJobs() {
         return end <= cur.length ? l : { ...l, [id]: cur + chunk.slice(cur.length - offset) };
       });
     });
-    return () => es.close();
+    return () => {
+      offLog();
+      offJobs();
+      unwatch();
+    };
   }, [loadLog]);
 
   return { jobs, logs, loadLog, connected };
@@ -187,9 +245,7 @@ export function useFirebase() {
   const [status, setStatus] = useState<FirebaseStatus>({ state: "checking", checkedAt: 0 });
   useEffect(() => {
     void firebaseApi.status().then(setStatus);
-    const es = new EventSource("/api/events");
-    es.addEventListener("firebase", (e) => setStatus(JSON.parse((e as MessageEvent).data)));
-    return () => es.close();
+    return subscribe("firebase", (data) => setStatus(data as FirebaseStatus));
   }, []);
   const refresh = useCallback(() => {
     setStatus((s) => ({ ...s, state: "checking" }));
@@ -302,12 +358,10 @@ export const projectsApi = {
 export function useReleaseLog(project: string) {
   const [lines, setLines] = useState<string[]>([]);
   useEffect(() => {
-    const es = new EventSource("/api/events");
-    es.addEventListener("release", (e) => {
-      const msg = JSON.parse((e as MessageEvent).data) as { project: string; line: string };
+    return subscribe("release", (data) => {
+      const msg = data as { project: string; line: string };
       if (msg.project === project) setLines((l) => [...l, msg.line]);
     });
-    return () => es.close();
   }, [project]);
   return { lines, clear: () => setLines([]) };
 }
@@ -377,11 +431,9 @@ export function useAssistantEvents(conversation: string | null, onEvent: (e: AiE
   handler.current = onEvent;
   useEffect(() => {
     if (!conversation) return;
-    const es = new EventSource("/api/events");
-    es.addEventListener("assistant", (e) => {
-      const msg = JSON.parse((e as MessageEvent).data) as { conversation: string; event: AiEvent };
+    return subscribe("assistant", (data) => {
+      const msg = data as { conversation: string; event: AiEvent };
       if (msg.conversation === conversation) handler.current(msg.event);
     });
-    return () => es.close();
   }, [conversation]);
 }
