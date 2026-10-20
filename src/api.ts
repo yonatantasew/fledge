@@ -366,6 +366,7 @@ export const aiApi = {
   conversation: (id: string) =>
     send<{ id: string; app: string | null; title: string; busy: boolean; messages: AiServerMessage[]; pending: AiPendingApproval[] }>("GET", `/api/ai/conversations/${id}`),
   send: (id: string, text: string) => post<{ ok: true }>(`/api/ai/conversations/${id}/messages`, { text }),
+  mcpPending: () => send<AiPendingApproval[]>("GET", "/api/ai/mcp/pending"),
   answer: (id: string, callId: string, approved: boolean) =>
     post<{ ok: true }>(`/api/ai/conversations/${id}/approvals/${encodeURIComponent(callId)}`, { approved }),
 };

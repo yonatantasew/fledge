@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, projectsApi, useJobs, type Info, type ProjectSummary } from "@/api";
 import { AddAppDialog } from "@/components/AddAppDialog";
 import { Assistant } from "@/components/Assistant";
+import { OutsideApprovals } from "@/components/OutsideApprovals";
 import { BuildForm } from "@/components/BuildForm";
 import { ConfigDialog } from "@/components/ConfigDialog";
 import { FirebaseLogin } from "@/components/FirebaseLogin";
@@ -355,6 +356,7 @@ export function App() {
         )}
 
         {assistant && <Assistant app={projectId} onClose={() => setAssistant(false)} />}
+        <OutsideApprovals />
 
         <AddAppDialog
           open={adding}
