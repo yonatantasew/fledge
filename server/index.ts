@@ -22,7 +22,7 @@ import { generateCommands, tokenize } from "./templates.ts";
 import { cancelLogin, firebaseStatus, onFirebaseChange, startLogin } from "./firebase.ts";
 import { templateGithub, templateSlack, type ReleaseFacts } from "./notes.ts";
 import { connections, draftWithClaude, gatherFacts, publish, releases, validatePublish } from "./release.ts";
-import { getConversation, listConversations, newConversation, send as sendToAssistant } from "./ai/agent.ts";
+import { answerApproval, getConversation, listConversations, newConversation, pendingApprovals, send as sendToAssistant } from "./ai/agent.ts";
 import { availableModels, listProviders, removeProvider, saveProvider, setActive } from "./ai/providers.ts";
 import type { ToolContext } from "./ai/tools.ts";
 import { startable } from "./scheduler.ts";
@@ -998,13 +998,24 @@ async function assistantApi(req: http.IncomingMessage, res: http.ServerResponse,
       return send(res, 200, { id: c.id });
     }
   }
+  // Only the page answers an action: the model has no way to reach this route.
+  const approvalRoute = /^\/api\/ai\/conversations\/([a-z0-9]+)\/approvals\/([^/]{1,200})$/.exec(url.pathname);
+  if (approvalRoute && req.method === "POST") {
+    if (typeof body.approved !== "boolean") return send(res, 400, { error: "approved must be true or false" });
+    if (!answerApproval(approvalRoute[1], decodeURIComponent(approvalRoute[2]), body.approved)) return send(res, 404, { error: "nothing is waiting for that answer" });
+    return send(res, 200, { ok: true });
+  }
   const convRoute = /^\/api\/ai\/conversations\/([a-z0-9]+)(\/messages)?$/.exec(url.pathname);
   if (convRoute) {
     const c = getConversation(convRoute[1]);
     if (!c) return send(res, 404, { error: "no such conversation" });
     if (req.method === "GET" && !convRoute[2]) {
       // The provider's raw replies stay on the server.
-      return send(res, 200, { ...c, messages: c.messages.map((m) => (m.role === "assistant" ? { ...m, raw: undefined } : m)) });
+      return send(res, 200, {
+        ...c,
+        messages: c.messages.map((m) => (m.role === "assistant" ? { ...m, raw: undefined } : m)),
+        pending: pendingApprovals(c.id),
+      });
     }
     if (req.method === "POST" && convRoute[2]) {
       const text = typeof body.text === "string" ? body.text.trim().slice(0, 8000) : "";
