@@ -7,8 +7,9 @@ queues every combination, runs one Android and one iOS build at a time with
 live logs, installs finished builds on a connected phone, and cuts the release:
 version bump, GitHub (pre-)release, Jira updates, and notes drafted with Claude.
 An assistant panel answers questions about builds, branches and releases, and
-creates branches, queues builds and installs them once you approve, using
-whichever model you give it.
+creates branches, queues builds, installs, publishes and updates Jira once you
+approve, using whichever model you give it. Other agents get the same tools
+over MCP.
 
 ## Install
 
@@ -267,9 +268,14 @@ exactly what will happen, and nothing runs until you press **Approve**:
 - **Queue builds**, **cancel a build**, and **install a build** on a connected
   phone. The card says when an environment asks for confirmation and when an
   install would erase the app's data.
+- **Publish a release**, the same as the Release tab: the card lists the
+  version, the PRs, the bump branch and PR, the kind of release and how many
+  Jira tickets move. Ask it to improve the notes first and it rewrites them
+  from the release's facts; a **dry run** makes the bump commit and stops.
+- **Comment on** or **move a Jira ticket** (`acli`), showing the ticket's
+  summary and current status.
 
-Declining tells the model not to retry. Releases and Jira changes aren't
-actions yet; asked for one, it says what it would do.
+Declining tells the model not to retry.
 
 Add models with the gear in the panel:
 
@@ -285,6 +291,21 @@ stored in the macOS keychain (service `fledge-assistant`) and never sent to the
 page; the rest of the settings is `~/.config/fledge/assistant.json`. What you
 ask, and what the tools look up, goes to the model's provider. Conversations
 live in memory until fledge stops.
+
+### Other agents (MCP)
+
+fledge serves the same tools over the Model Context Protocol at
+`http://localhost:4417/mcp` (Streamable HTTP), for Claude Code, Cursor or any
+other MCP client:
+
+```sh
+claude mcp add --transport http fledge http://localhost:4417/mcp
+```
+
+Lookups answer straight away. An action shows up as a card in the corner of
+fledge's page, naming the client that asked, and waits for **Approve** there.
+The client gets "declined" if you decline, if nobody answers within ten
+minutes, or as soon as it gives up waiting. fledge must be running.
 
 ## Xcode
 
@@ -315,9 +336,13 @@ The server listens on `127.0.0.1` only. It rejects requests whose `Host` or
 `Origin` isn't fledge, which blocks DNS rebinding and cross-site POSTs. Commands
 are built from fixed lists and the checked `fledge.json`, never through a
 shell. The assistant's tools check every input before running, and refuse a
-git ref that starts with `-`. Its actions run only after an answer from the
-page; the model has no way to approve them. A device ID must match a device that's connected at that moment, and
-Publish refuses a tag or branch that already exists.
+git ref that starts with `-`. A device ID must match a device that's connected
+at that moment, and Publish refuses a tag or branch that already exists.
+
+Actions from the assistant and from MCP clients run only after an answer from
+the page, so neither can act through fledge on its own. That's a guard against
+mistakes, not a wall: like fledge's API, it's open to every program on the Mac,
+and an agent with a shell could run the same commands itself.
 
 ## Development
 
