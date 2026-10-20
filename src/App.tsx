@@ -146,7 +146,7 @@ export function App() {
     <ProjectContext.Provider value={project}>
       <div className="flex min-h-svh flex-col">
         <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur">
-          <div className="mx-auto flex max-w-[1500px] flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
             <div className="flex items-center gap-2">
               <div className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
                 <HugeiconsIcon icon={Rocket01Icon} className="size-4.5" />
@@ -332,12 +332,12 @@ export function App() {
             {/* Both tabs stay mounted (only hidden), so switching keeps loaded changes, drafted notes and form state.
                 Keyed by app, so each app starts with its own. */}
             {/* pb-24: the end of the page can scroll clear of the mascot in the corner. */}
-            <main className={cn("mx-auto w-full max-w-[1500px] flex-1 p-4 pb-24", view !== "release" && "hidden")}>
+            <main className={cn("w-full flex-1 p-4 pb-24", view !== "release" && "hidden")}>
               <ReleasePanel key={projectId} project={projectId} />
             </main>
             <main
               className={cn(
-                "mx-auto grid w-full max-w-[1500px] flex-1 grid-cols-[minmax(0,1fr)] gap-4 p-4 pb-24 lg:grid-cols-[400px_minmax(0,1fr)]",
+                "grid w-full flex-1 grid-cols-[minmax(0,1fr)] gap-4 p-4 pb-24 lg:grid-cols-[400px_minmax(0,1fr)]",
                 view !== "build" && "hidden",
               )}
             >
