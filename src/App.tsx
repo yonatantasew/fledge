@@ -344,7 +344,7 @@ export function App() {
               <div className="lg:sticky lg:top-[73px] lg:max-h-[calc(100svh-89px)] lg:overflow-y-auto">
                 <BuildForm key={projectId} projectId={projectId} checkout={checkout} />
               </div>
-              <div className="grid min-h-0 gap-4 lg:h-[calc(100svh-89px)] lg:grid-rows-[minmax(0,2fr)_minmax(0,3fr)]">
+              <div className="grid min-h-0 grid-cols-[minmax(0,1fr)] gap-4 lg:h-[calc(100svh-89px)] lg:grid-rows-[minmax(0,2fr)_minmax(0,3fr)]">
                 <JobList jobs={jobs} selected={selected} onSelect={setSelected} showProject={(projects?.length ?? 0) > 1} />
                 <LogView job={job} log={selected ? logs[selected] : undefined} />
               </div>

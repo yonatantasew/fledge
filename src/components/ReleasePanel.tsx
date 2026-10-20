@@ -174,8 +174,9 @@ export function ReleasePanel({ project }: { project: string }) {
               <HugeiconsIcon icon={Tag01Icon} className="size-5" />
               Release range
             </CardTitle>
-            <CardDescription>Everything merged to main since the release you pick.</CardDescription>
-            <CardAction className="flex gap-1.5">
+            <CardDescription className="col-start-1">Everything merged to main since the release you pick.</CardDescription>
+            {/* Below the title on a phone, where there's no room beside it. */}
+            <CardAction className="col-start-1 row-start-3 flex flex-wrap gap-1.5 justify-self-start sm:col-start-2 sm:row-start-1 sm:justify-self-end">
               {connections && (
                 <>
                   <Connection icon={GithubIcon} label="GitHub" ok={connections.github.ok} detail={connections.github.login ?? connections.github.error} />

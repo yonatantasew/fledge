@@ -288,13 +288,14 @@ export function BuildForm({ projectId, checkout }: { projectId: string; checkout
               value={options.iosArtifact}
               onValueChange={(v) => v && setOptions({ iosArtifact: v as BuildOptions["iosArtifact"] })}
             >
-              <ToggleGroupItem value="ipa" className="flex-1">
+              {/* Tighter on a phone, where "Prepare Xcode" is wider than a third of the card. */}
+              <ToggleGroupItem value="ipa" className="flex-1 max-sm:px-1 max-sm:text-[13px]">
                 IPA
               </ToggleGroupItem>
-              <ToggleGroupItem value="app" className="flex-1">
+              <ToggleGroupItem value="app" className="flex-1 max-sm:px-1 max-sm:text-[13px]">
                 .app (device)
               </ToggleGroupItem>
-              <ToggleGroupItem value="xcode" className="flex-1">
+              <ToggleGroupItem value="xcode" className="flex-1 max-sm:px-1 max-sm:text-[13px]">
                 Prepare Xcode
               </ToggleGroupItem>
             </ToggleGroup>
