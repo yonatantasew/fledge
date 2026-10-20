@@ -76,9 +76,9 @@ export function ReleasePanel({ project }: { project: string }) {
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [notes, setNotes] = useState<Notes>({ slack: "", github: "" });
-  const [edited, setEdited] = useState(false); // hand-edited or Claude-drafted: stop re-rendering the template
+  const [edited, setEdited] = useState(false); // hand-edited or drafted: stop re-rendering the template
   const [drafting, setDrafting] = useState(false);
-  const [draftInfo, setDraftInfo] = useState<{ warnings: string[]; costUsd: number } | null>(null);
+  const [draftInfo, setDraftInfo] = useState<{ warnings: string[]; model: string } | null>(null);
   const [draftError, setDraftError] = useState<string | null>(null);
 
   const [confirm, setConfirm] = useState("");
@@ -134,7 +134,7 @@ export function ReleasePanel({ project }: { project: string }) {
     try {
       const r = await releaseApi.draft(project, effective);
       setNotes({ slack: r.slack, github: r.github });
-      setDraftInfo({ warnings: r.warnings, costUsd: r.costUsd });
+      setDraftInfo({ warnings: r.warnings, model: r.model });
       setEdited(true);
     } catch (e) {
       setDraftError((e as Error).message);
@@ -180,7 +180,7 @@ export function ReleasePanel({ project }: { project: string }) {
                 <>
                   <Connection icon={GithubIcon} label="GitHub" ok={connections.github.ok} detail={connections.github.login ?? connections.github.error} />
                   <Connection icon={Ticket01Icon} label="Jira" ok={connections.jira.ok} detail={connections.jira.email ?? connections.jira.error} />
-                  <Connection icon={AiMagicIcon} label="Claude" ok={connections.claude.ok} detail={connections.claude.version ? `Claude Code ${connections.claude.version}` : connections.claude.error} />
+                  <Connection icon={AiMagicIcon} label="Model" ok={connections.model.ok} detail={connections.model.name ?? connections.model.error} />
                 </>
               )}
             </CardAction>
@@ -266,7 +266,7 @@ export function ReleasePanel({ project }: { project: string }) {
               Notes
             </CardTitle>
             <CardDescription>
-              {edited ? (draftInfo ? `Drafted by Claude · $${draftInfo.costUsd.toFixed(2)}` : "Edited") : "From the template — Claude can rewrite them for testers"}
+              {edited ? (draftInfo ? `Drafted by ${draftInfo.model}` : "Edited") : "From the template — the assistant's model can rewrite them for testers"}
             </CardDescription>
             <CardAction className="flex gap-1.5">
               {edited && (
@@ -276,7 +276,7 @@ export function ReleasePanel({ project }: { project: string }) {
               )}
               <Button size="sm" disabled={!effective || drafting} onClick={draft}>
                 <HugeiconsIcon icon={drafting ? Loading03Icon : AiMagicIcon} className={cn("size-4", drafting && "animate-spin")} />
-                {drafting ? "Claude is writing…" : "Draft with Claude"}
+                {drafting ? "Drafting…" : "Draft notes"}
               </Button>
             </CardAction>
           </CardHeader>

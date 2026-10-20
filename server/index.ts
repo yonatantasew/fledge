@@ -21,9 +21,10 @@ import { artifactPath, parseRequest, planBuild, resolveFlutter, XCARCHIVE_PATH, 
 import { generateCommands, tokenize } from "./templates.ts";
 import { cancelLogin, firebaseStatus, onFirebaseChange, startLogin } from "./firebase.ts";
 import { templateGithub, templateSlack, type ReleaseFacts } from "./notes.ts";
-import { connections, draftWithClaude, gatherFacts, publish, releases, validatePublish } from "./release.ts";
+import { connections, gatherFacts, notesRequest, publish, releases, validatePublish } from "./release.ts";
 import { answerApproval, getConversation, listConversations, newConversation, pendingApprovals, send as sendToAssistant } from "./ai/agent.ts";
-import { availableModels, listProviders, removeProvider, saveProvider, setActive } from "./ai/providers.ts";
+import { availableModels, connectorFor, listProviders, removeProvider, saveProvider, setActive } from "./ai/providers.ts";
+import { structuredAnswer } from "./ai/structured.ts";
 import type { ToolContext } from "./ai/tools.ts";
 import { startable } from "./scheduler.ts";
 import { flavorOf, parseConfig, type FledgeConfig } from "./config.ts";
@@ -864,7 +865,13 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
         jira: r.jira ? { fromStatus: r.jira.fromStatus, toStatus: r.jira.toStatus } : null,
       } : null);
     }
-    if (req.method === "GET" && url.pathname === "/api/release/connections") return send(res, 200, await connections(project));
+    if (req.method === "GET" && url.pathname === "/api/release/connections") {
+      // The notes are drafted by the assistant's active model.
+      const ai = await listProviders();
+      const active = ai.providers.find((x) => x.id === ai.active);
+      const model = active ? { ok: true, name: `${active.name}${active.model ? ` · ${active.model}` : ""}` } : { ok: false, error: "no model set up — add one in the assistant's settings" };
+      return send(res, 200, { ...(await connections(project)), model });
+    }
     if (req.method === "GET" && url.pathname === "/api/release/tags") {
       return send(res, 200, project.config?.release ? await releases(project) : []);
     }
@@ -883,10 +890,13 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
 
     if (req.method === "POST" && url.pathname === "/api/release/draft") {
       const facts = body.facts as ReleaseFacts;
+      // Drafted by the model that's active in the assistant's settings.
       try {
-        return send(res, 200, await draftWithClaude(project, facts, { slack: templateSlack(facts), github: templateGithub(facts) }));
+        const { connector, provider } = await connectorFor();
+        const notes = await structuredAnswer(connector, notesRequest(project, facts, { slack: templateSlack(facts), github: templateGithub(facts) }));
+        return send(res, 200, { ...notes, model: `${provider.name}${provider.model ? ` · ${provider.model}` : ""}` });
       } catch (e) {
-        return send(res, 502, { error: `Claude: ${(e as Error).message}` });
+        return send(res, 502, { error: (e as Error).message });
       }
     }
 

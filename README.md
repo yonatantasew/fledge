@@ -37,7 +37,7 @@ it's new. Run anywhere else, it opens your list of apps.
 
 **Optional:**
 - **Installing on devices:** Xcode (`xcrun devicectl`) and the Android SDK (`adb`).
-- **Releases:** `gh`, plus `acli` for Jira and the `claude` CLI for drafting notes.
+- **Releases:** `gh`, plus `acli` for Jira and an assistant model for drafting notes.
 - **The Firebase sign-in badge:** `firebase`.
 - **The assistant:** a model: the `claude` CLI login, an API key, or a local
   model through Ollama or LM Studio.
@@ -226,17 +226,18 @@ this Mac. **Open the app after installing** is off by default.
 
 ## Releases
 
-Uses the logins already on your Mac: `gh`, `acli` (Jira) and `claude`. fledge
-stores no tokens.
+Uses the logins already on your Mac: `gh` and `acli` (Jira). fledge stores no
+tokens for them.
 
 1. **Range:** pick the last release. fledge lists every PR merged to the base
    branch since then, with its DRI, size, tickets and their live Jira status,
    and whether it's stacked on another PR. Untick a PR to leave it out.
 2. **Notes:** the channel note and the GitHub release body start from a
-   template. **Draft with Claude** rewrites the item titles for testers, groups
-   related PRs under Rollback and lists what to check before posting (missing
-   tickets, unexpected statuses and so on). It runs `claude -p` with no tools.
-   Both texts stay editable.
+   template. **Draft notes** has the assistant's active model (see
+   [Assistant](#assistant)) rewrite the item titles for testers, group related
+   PRs under Rollback and list what to check before posting (missing tickets,
+   unexpected statuses and so on). The model gets the facts and nothing else:
+   no tools. Both texts stay editable.
 3. **Publish**, after you type the tag to confirm. In a temporary worktree,
    fledge commits the version bump on top of the base branch, pushes the bump
    branch, opens the PR, and creates the GitHub (pre-)release on that commit.

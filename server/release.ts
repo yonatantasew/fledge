@@ -1,8 +1,9 @@
-// Release tab: gather facts from git, GitHub and Jira; draft the notes with
-// Claude; then cut the release (bump PR, tag, GitHub release, Jira moves).
+// Release tab: gather facts from git, GitHub and Jira; describe the notes for
+// a model to draft; then cut the release (bump PR, tag, GitHub release, Jira
+// moves).
 //
 // Credentials are the ones already on this Mac — `gh` (the configured work
-// account), `acli` (Jira) and the `claude` CLI — so the console stores none.
+// account) and `acli` (Jira) — so the console stores none.
 // Every outward action happens only in publish(), which the UI gates behind a
 // typed confirmation, and runs in a throwaway worktree so no checkout moves.
 
@@ -26,6 +27,7 @@ import {
 } from "./notes.ts";
 import { fill, type ReleaseConfig } from "./config.ts";
 import type { Project } from "./projects.ts";
+import type { ToolDef } from "./ai/types.ts";
 
 const run = promisify(execFile);
 /** The app's release settings; release actions stop with a clear message without them. */
@@ -91,11 +93,10 @@ export async function releases(p: Project): Promise<ReleaseRef[]> {
 export interface StatusReport {
   github: { ok: boolean; login?: string; error?: string };
   jira: { ok: boolean; email?: string; error?: string };
-  claude: { ok: boolean; version?: string; error?: string };
 }
 
 export async function connections(p: Project): Promise<StatusReport> {
-  const [github, jira, claude] = await Promise.all([
+  const [github, jira] = await Promise.all([
     (p.config?.release ? gh(p, ["api", "user", "-q", ".login"]) : Promise.reject(new Error("releases aren't set up (no release section in fledge.json)"))).then(
       (login) => ({ ok: true, login }),
       (e: Error) => ({ ok: false, error: e.message.split("\n")[0] }),
@@ -109,12 +110,8 @@ export async function connections(p: Project): Promise<StatusReport> {
       },
       () => ({ ok: false, error: "acli not found or not authenticated (acli jira auth login)" }),
     ),
-    run("claude", ["--version"]).then(
-      (r) => ({ ok: true, version: r.stdout.trim().split(" ")[0] }),
-      () => ({ ok: false, error: "claude CLI not found on PATH" }),
-    ),
   ]);
-  return { github, jira, claude };
+  return { github, jira };
 }
 
 async function jiraTickets(keys: string[]): Promise<Record<string, Ticket>> {
@@ -219,9 +216,9 @@ function isBump(p: Project, branch: string, title: string) {
   return templateRegex(b.branch).test(branch) || templateRegex(b.prTitle).test(title);
 }
 
-// ------------------------------------------------------------------- claude
+// ------------------------------------------------------------------- drafting
 
-const NOTES_SCHEMA = {
+const NOTES_SCHEMA: ToolDef["schema"] = {
   type: "object",
   properties: {
     slack: { type: "string", description: "The channel note, plain text" },
@@ -254,31 +251,13 @@ Context that is correct by design, so never warn about it:
 
 warnings (short, specific): PRs with no ticket; a DRI that looks like a GitHub login rather than a name; ${rel(p).jira ? `tickets whose Jira status is not "${rel(p).jira!.fromStatus}" (they will not be moved automatically), naming the status; ` : ""} anything in the facts that contradicts itself. Empty array if nothing.`;
 
-export async function draftWithClaude(p: Project, facts: ReleaseFacts, templates: { slack: string; github: string }) {
-  const dir = await mkdtemp(path.join(tmpdir(), "fledge-claude-"));
-  try {
-    const prompt = `${style(p)}\n\nFACTS:\n${JSON.stringify(facts, null, 2)}\n\nTEMPLATE slack:\n${templates.slack}\n\nTEMPLATE github:\n${templates.github}\n`;
-    const child = run(
-      "claude",
-      [
-        "-p",
-        "--output-format", "json",
-        "--json-schema", JSON.stringify(NOTES_SCHEMA),
-        "--tools", "",
-        "--no-session-persistence",
-        "--strict-mcp-config",
-        "--setting-sources", "",
-      ],
-      { cwd: dir, timeout: 180_000, maxBuffer: 16 << 20 },
-    );
-    child.child.stdin!.end(prompt);
-    const { stdout } = await child;
-    const out = JSON.parse(stdout) as { is_error?: boolean; result?: string; structured_output?: { slack: string; github: string; warnings: string[] }; total_cost_usd?: number };
-    if (out.is_error || !out.structured_output) throw new Error(out.result ?? "Claude returned no notes");
-    return { ...out.structured_output, costUsd: out.total_cost_usd ?? 0 };
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+/** What a model needs to draft the notes: instructions, the facts and templates, and the shape of the answer. */
+export function notesRequest(p: Project, facts: ReleaseFacts, templates: { slack: string; github: string }) {
+  return {
+    system: style(p),
+    prompt: `FACTS:\n${JSON.stringify(facts, null, 2)}\n\nTEMPLATE slack:\n${templates.slack}\n\nTEMPLATE github:\n${templates.github}\n`,
+    tool: { name: "submit_notes", description: "Hand in the drafted notes.", schema: NOTES_SCHEMA } satisfies ToolDef,
+  };
 }
 
 // ------------------------------------------------------------------ publish

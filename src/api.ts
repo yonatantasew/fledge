@@ -205,7 +205,7 @@ export type { MergedPr, ReleaseFacts, Ticket };
 export interface Connections {
   github: { ok: boolean; login?: string; error?: string };
   jira: { ok: boolean; email?: string; error?: string };
-  claude: { ok: boolean; version?: string; error?: string };
+  model: { ok: boolean; name?: string; error?: string };
 }
 
 export interface ReleaseTag {
@@ -245,7 +245,7 @@ export const releaseApi = {
     post<{ facts: ReleaseFacts; templates: Notes }>("/api/release/facts", { project, baseTag, prerelease }),
   template: (project: string, facts: ReleaseFacts) => post<Notes>("/api/release/template", { project, facts }),
   draft: (project: string, facts: ReleaseFacts) =>
-    post<Notes & { warnings: string[]; costUsd: number }>("/api/release/draft", { project, facts }),
+    post<Notes & { warnings: string[]; model: string }>("/api/release/draft", { project, facts }),
   publish: (project: string, facts: ReleaseFacts, githubNotes: string, prerelease: boolean, updateJira: boolean, dryRun = false) =>
     post<PublishResult>("/api/release/publish", { project, facts, githubNotes, prerelease, updateJira, dryRun }),
 };
