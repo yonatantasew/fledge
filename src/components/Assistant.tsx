@@ -5,6 +5,7 @@ import {
   ArrowDown01Icon,
   ArrowRight01Icon,
   Cancel01Icon,
+  CheckmarkCircle02Icon,
   Loading03Icon,
   SentIcon,
   Settings02Icon,
@@ -12,7 +13,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { aiApi, useAssistantEvents, type AiEvent, type AiServerMessage } from "@/api";
+import { aiApi, useAssistantEvents, type AiEvent, type AiPendingApproval, type AiServerMessage } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
@@ -34,16 +35,23 @@ const TOOL_LABEL: Record<string, string> = {
   changes_since_release: "Gathered changes since a release",
   jira_ticket: "Looked up a ticket",
   planned_command: "Worked out a build command",
+  create_branch: "Create a branch",
+  push_branch: "Push a branch",
+  start_builds: "Queue builds",
+  cancel_build: "Cancel a build",
+  install_build: "Install a build",
 };
+
+type Approval = { title: string; details: string[]; state: "pending" | "approved" | "declined" };
 
 type Part =
   | { type: "text"; text: string }
-  | { type: "tool"; id: string; name: string; input: unknown; result?: string; isError?: boolean };
+  | { type: "tool"; id: string; name: string; input: unknown; result?: string; isError?: boolean; approval?: Approval };
 
 type Item = { kind: "user"; text: string } | { kind: "assistant"; parts: Part[]; notes: string[]; busy: boolean };
 
 /** Server messages → chat items: each user turn's assistant steps form one reply. */
-function toItems(messages: AiServerMessage[]): Item[] {
+function toItems(messages: AiServerMessage[], pending: AiPendingApproval[] = []): Item[] {
   const items: Item[] = [];
   let reply: Extract<Item, { kind: "assistant" }> | null = null;
   for (const m of messages) {
@@ -57,7 +65,21 @@ function toItems(messages: AiServerMessage[]): Item[] {
     } else if (reply) {
       for (const r of m.results) {
         const part = reply.parts.find((p) => p.type === "tool" && p.id === r.id) as Extract<Part, { type: "tool" }> | undefined;
-        if (part) Object.assign(part, { result: r.content.slice(0, 600), isError: r.isError });
+        if (part) {
+          Object.assign(part, { result: r.content.slice(0, 600), isError: r.isError });
+          if (r.approval) part.approval = { title: r.approval.title, details: r.approval.details, state: r.approval.approved ? "approved" : "declined" };
+        }
+      }
+    }
+  }
+  // Actions still waiting for an answer (the page was opened mid-turn).
+  for (const a of pending) {
+    for (const item of items) {
+      if (item.kind !== "assistant") continue;
+      const part = item.parts.find((p) => p.type === "tool" && p.id === a.id) as Extract<Part, { type: "tool" }> | undefined;
+      if (part) {
+        part.approval = { title: a.title, details: a.details, state: "pending" };
+        item.busy = true;
       }
     }
   }
@@ -122,9 +144,10 @@ function Formatted({ text }: { text: string }) {
   return <div className="space-y-2 leading-relaxed">{blocks}</div>;
 }
 
-function ToolChip({ part }: { part: Extract<Part, { type: "tool" }> }) {
+function ToolChip({ part, onAnswer }: { part: Extract<Part, { type: "tool" }>; onAnswer: (approved: boolean) => Promise<void> }) {
   const [open, setOpen] = useState(false);
   const running = part.result === undefined;
+  if (part.approval) return <ApprovalCard part={part} approval={part.approval} onAnswer={onAnswer} />;
   return (
     <div className="rounded-md border bg-muted/40 text-xs">
       <button className="flex w-full items-center gap-1.5 px-2 py-1 text-left text-muted-foreground" onClick={() => setOpen(!open)}>
@@ -138,6 +161,59 @@ function ToolChip({ part }: { part: Extract<Part, { type: "tool" }> }) {
             {part.name} {JSON.stringify(part.input)}
           </div>
           {part.result !== undefined && <div className={cn(part.isError && "text-destructive")}>{part.result}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** An action the assistant wants to take: what exactly it will do, and the developer's answer. */
+function ApprovalCard({ part, approval, onAnswer }: { part: Extract<Part, { type: "tool" }>; approval: Approval; onAnswer: (approved: boolean) => Promise<void> }) {
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const pending = approval.state === "pending";
+  const ran = approval.state === "approved" && part.result !== undefined;
+  const answer = async (approved: boolean) => {
+    setSending(true);
+    setError(null);
+    try {
+      await onAnswer(approved);
+    } catch (e) {
+      setError((e as Error).message);
+      setSending(false);
+    }
+  };
+  return (
+    <div className={cn("rounded-lg border text-sm", pending ? "border-primary/50 bg-primary/5" : "bg-muted/30")}>
+      <div className="space-y-1.5 px-3 py-2">
+        <div className="flex items-center gap-2">
+          <span className="flex-1 font-medium">{approval.title}</span>
+          {!pending && (
+            <span className={cn("flex items-center gap-1 text-xs", approval.state === "declined" ? "text-muted-foreground" : part.isError ? "text-destructive" : "text-success")}>
+              <HugeiconsIcon
+                icon={approval.state === "declined" ? Cancel01Icon : !ran ? Loading03Icon : part.isError ? Alert02Icon : CheckmarkCircle02Icon}
+                className={cn("size-3.5", approval.state === "approved" && !ran && "animate-spin")}
+              />
+              {approval.state === "declined" ? "Declined" : !ran ? "Running" : part.isError ? "Failed" : "Done"}
+            </span>
+          )}
+        </div>
+        <ul className="list-disc space-y-0.5 pl-4 text-xs text-muted-foreground">
+          {approval.details.map((d, i) => (
+            <li key={i}>{d}</li>
+          ))}
+        </ul>
+        {ran && <p className={cn("text-xs whitespace-pre-wrap", part.isError && "text-destructive")}>{part.result}</p>}
+        {error && <p className="text-xs text-destructive">{error}</p>}
+      </div>
+      {pending && (
+        <div className="flex justify-end gap-2 border-t px-3 py-2">
+          <Button size="sm" variant="ghost" disabled={sending} onClick={() => void answer(false)}>
+            Decline
+          </Button>
+          <Button size="sm" disabled={sending} onClick={() => void answer(true)}>
+            Approve
+          </Button>
         </div>
       )}
     </div>
@@ -176,7 +252,7 @@ export function Assistant({ app, onClose }: { app: string | null; onClose: () =>
       setItems([]);
       return;
     }
-    void aiApi.conversation(current).then((c) => setItems(toItems(c.messages)));
+    void aiApi.conversation(current).then((c) => setItems(toItems(c.messages, c.pending)));
   }, [current]);
   // A block body: scrollIntoView returns a Promise in newer browsers, which React would take as the cleanup.
   useEffect(() => {
@@ -196,9 +272,17 @@ export function Assistant({ app, onClose }: { app: string | null; onClose: () =>
         if (last?.type === "text") r.parts[r.parts.length - 1] = { ...last, text: last.text + e.delta };
         else r.parts.push({ type: "text", text: e.delta });
       } else if (e.type === "tool") r.parts.push({ type: "tool", id: e.id, name: e.name, input: e.input });
-      else if (e.type === "tool_result") {
+      else if (e.type === "tool_result" || e.type === "approval" || e.type === "approval_result") {
         const i = r.parts.findIndex((p) => p.type === "tool" && p.id === e.id);
-        if (i >= 0) r.parts[i] = { ...(r.parts[i] as Extract<Part, { type: "tool" }>), result: e.preview, isError: e.isError };
+        if (i >= 0) {
+          const part = r.parts[i] as Extract<Part, { type: "tool" }>;
+          r.parts[i] =
+            e.type === "tool_result"
+              ? { ...part, result: e.preview, isError: e.isError }
+              : e.type === "approval"
+                ? { ...part, approval: { title: e.title, details: e.details, state: "pending" } }
+                : { ...part, approval: part.approval && { ...part.approval, state: e.approved ? "approved" : "declined" } };
+        }
       } else if (e.type === "note") r.notes.push(e.text);
       else if (e.type === "error") {
         r.notes.push(e.message);
@@ -296,8 +380,8 @@ export function Assistant({ app, onClose }: { app: string | null; onClose: () =>
               </div>
             ) : (
               <div key={i} className="mr-4 space-y-2">
-                {item.parts.map((p, j) => (p.type === "text" ? <Formatted key={j} text={p.text} /> : <ToolChip key={j} part={p} />))}
-                {item.busy && (
+                {item.parts.map((p, j) => (p.type === "text" ? <Formatted key={j} text={p.text} /> : <ToolChip key={j} part={p} onAnswer={(approved) => aiApi.answer(current!, p.id, approved).then(() => {})} />))}
+                {item.busy && !item.parts.some((p) => p.type === "tool" && p.approval?.state === "pending") && (
                   <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
                     <HugeiconsIcon icon={Loading03Icon} className="size-3.5 animate-spin" />
                     Working…

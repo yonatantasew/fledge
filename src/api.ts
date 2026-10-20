@@ -339,6 +339,8 @@ export type AiEvent =
   | { type: "text"; delta: string }
   | { type: "tool"; id: string; name: string; input: unknown }
   | { type: "tool_result"; id: string; name: string; isError: boolean; preview: string }
+  | { type: "approval"; id: string; title: string; details: string[] }
+  | { type: "approval_result"; id: string; approved: boolean }
   | { type: "note"; text: string }
   | { type: "done" }
   | { type: "error"; message: string };
@@ -346,7 +348,12 @@ export type AiEvent =
 export type AiServerMessage =
   | { role: "user"; text: string }
   | { role: "assistant"; text: string; toolCalls: { id: string; name: string; input: unknown }[] }
-  | { role: "tool"; results: { id: string; name: string; content: string; isError?: boolean }[] };
+  | {
+      role: "tool";
+      results: { id: string; name: string; content: string; isError?: boolean; approval?: { title: string; details: string[]; approved: boolean } }[];
+    };
+
+export type AiPendingApproval = { id: string; title: string; details: string[] };
 
 export const aiApi = {
   providers: () => send<{ active: string | null; presets: Record<string, AiPreset>; providers: AiProvider[] }>("GET", "/api/ai/providers"),
@@ -356,8 +363,11 @@ export const aiApi = {
   models: (q: { id?: string; preset: string; baseUrl?: string; apiKey?: string }) => post<string[]>("/api/ai/models", q),
   conversations: () => send<{ id: string; app: string | null; title: string; busy: boolean; updatedAt: number }[]>("GET", "/api/ai/conversations"),
   newConversation: (app: string | null) => post<{ id: string }>("/api/ai/conversations", { app }),
-  conversation: (id: string) => send<{ id: string; app: string | null; title: string; busy: boolean; messages: AiServerMessage[] }>("GET", `/api/ai/conversations/${id}`),
+  conversation: (id: string) =>
+    send<{ id: string; app: string | null; title: string; busy: boolean; messages: AiServerMessage[]; pending: AiPendingApproval[] }>("GET", `/api/ai/conversations/${id}`),
   send: (id: string, text: string) => post<{ ok: true }>(`/api/ai/conversations/${id}/messages`, { text }),
+  answer: (id: string, callId: string, approved: boolean) =>
+    post<{ ok: true }>(`/api/ai/conversations/${id}/approvals/${encodeURIComponent(callId)}`, { approved }),
 };
 
 /** Live assistant events for one conversation. */
