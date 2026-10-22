@@ -505,3 +505,21 @@ export function useAssistantActivity() {
   }, []);
   return { working: busy.size > 0, waiting: waiting.size };
 }
+
+// ------------------------------------------------------------------- shipping
+
+export type ShipPreview = { channel: string; text: string; file: string; size: number } | { error: string; needs?: "channel" | "token" };
+export type SlackStatus = { connected: boolean; team?: string; bot?: string; error?: string };
+
+export const shipApi = {
+  // A 400 from the preview still describes why, so read it either way.
+  preview: async (job: string, note = ""): Promise<ShipPreview> =>
+    (await fetch(`/api/jobs/${job}/ship?note=${encodeURIComponent(note)}`)).json(),
+  ship: (job: string, note: string) => post<{ ok: true }>(`/api/jobs/${job}/ship`, { note }),
+  slack: () => send<SlackStatus>("GET", "/api/slack"),
+  connect: (token: string) => post<SlackStatus>("/api/slack", { token }),
+  disconnect: () => send<SlackStatus>("DELETE", "/api/slack"),
+};
+
+/** Whether a finished build has a file Slack can take. */
+export const SHIPPABLE = (j: Job) => j.status === "succeeded" && ["apk", "appbundle", "ipa"].includes(j.artifact);

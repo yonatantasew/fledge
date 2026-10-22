@@ -9,6 +9,7 @@ import {
   MinusSignCircleIcon,
   PackageDeliveredIcon,
   PackageIcon,
+  SlackIcon,
   SmartPhone01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
@@ -95,13 +96,14 @@ function nodes(job: Job, now: number): { main: TreeNode[]; installs: TreeNode[] 
       detail: job.verified?.version,
     }),
   ];
+  // Where the artifact went: phones it was installed on, channels it was shipped to.
   const installs: TreeNode[] = (steps ?? [])
-    .filter((s) => s.id.startsWith("install-"))
+    .filter((s) => s.id.startsWith("install-") || s.id.startsWith("ship-"))
     .map((s) => ({
       key: s.id,
-      kind: "device",
-      icon: SmartPhone01Icon,
-      title: s.label.replace(/^Install on /, ""),
+      kind: s.id.startsWith("ship-") ? "slack" : "device",
+      icon: s.id.startsWith("ship-") ? SlackIcon : SmartPhone01Icon,
+      title: s.label.replace(/^Install on |^Slack /, ""),
       detail: s.detail,
       state: s.state,
       seconds: Math.round(((s.endedAt ?? now) - s.startedAt) / 1000),
@@ -198,7 +200,7 @@ export function BuildDetails({ job, log, onBack }: { job: Job; log: string | und
             ))}
             {installs.length > 0 && (
               <div className="flex">
-                {/* One branch per phone, from the artifact. */}
+                {/* One branch per phone or channel, from the artifact. */}
                 <span className="flex h-[3.75rem] items-center">
                   <Edge />
                 </span>

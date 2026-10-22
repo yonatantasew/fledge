@@ -1,11 +1,12 @@
-import { Alert02Icon, Archive02Icon, Cancel01Icon, CheckmarkCircle02Icon, Clock01Icon, FolderOpenIcon, Loading03Icon, RotateClockwiseIcon, StopIcon } from "@hugeicons/core-free-icons";
+import { Alert02Icon, Archive02Icon, Cancel01Icon, CheckmarkCircle02Icon, Clock01Icon, FolderOpenIcon, Loading03Icon, RotateClockwiseIcon, SlackIcon, StopIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useState } from "react";
-import { api, type Job, type JobStatus } from "@/api";
+import { api, SHIPPABLE, type Job, type JobStatus } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { InstallMenu } from "./InstallMenu";
+import { ShipDialog } from "./ShipDialog";
 
 // What builds look like everywhere: an icon, a colour for the tile's edge, a word.
 export const STATUS: Record<JobStatus, { icon: IconSvgElement; className: string; edge: string; label: string }> = {
@@ -60,8 +61,10 @@ function IconAction({ label, icon, onClick, className }: { label: string; icon: 
   );
 }
 
-/** What can be done with a build right now: cancel or resume it, install it, open its archive, show it in Finder. */
+/** What can be done with a build right now: cancel or resume it, install it, ship it, open its archive, show it in Finder. */
 export function BuildActions({ job }: { job: Job }) {
+  const [shipping, setShipping] = useState(false);
+  const sending = job.steps?.some((st) => st.id.startsWith("ship-") && st.state === "running");
   // Why Resume was refused (the checkout moved, files changed…), until the build changes.
   const [blocked, setBlocked] = useState<{ status: JobStatus; reason: string } | null>(null);
   const refused = blocked?.status === job.status ? blocked.reason : null;
@@ -92,6 +95,12 @@ export function BuildActions({ job }: { job: Job }) {
         </span>
       )}
       {INSTALLABLE(job) && <InstallMenu job={job} />}
+      {SHIPPABLE(job) && (
+        <>
+          <IconAction label={sending ? "Shipping to Slack…" : "Ship to Slack"} icon={sending ? Loading03Icon : SlackIcon} className={cn(sending && "[&_svg]:animate-spin")} onClick={() => setShipping(true)} />
+          <ShipDialog job={job} open={shipping} onOpenChange={setShipping} />
+        </>
+      )}
       {job.status === "succeeded" && job.xcarchive && (
         <IconAction label="Open the archive in Xcode Organizer to Distribute" icon={Archive02Icon} onClick={() => void api.organizer(job.id)} />
       )}
