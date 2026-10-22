@@ -34,6 +34,13 @@ fledge --help          # --repo, --config, --port
 Run inside an app's folder, fledge opens that app, adding it to your list if
 it's new. Run anywhere else, it opens your list of apps.
 
+**Install it as an app** so there's no URL to remember: open
+`http://localhost:4417` and use Chrome's install button in the address bar
+(or Safari's **File → Add to Dock**). fledge then has its own window and Dock
+icon. The app is still the fledge server on your Mac, so start `fledge` first;
+if it isn't running, the app says so and opens as soon as it is. Nothing is
+cached, so a new release shows up on the next reload.
+
 **Needs:** macOS, Node ≥ 20.11, and `fvm` or `flutter` on `PATH`.
 
 **Optional:**
