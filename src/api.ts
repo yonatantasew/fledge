@@ -57,6 +57,13 @@ export interface Job {
   version?: string; // the version it was queued to build (verified.version is what came out)
 }
 
+/** One level of a build's folder (build/fledge/…), for the Files layout. */
+export interface ArchiveListing {
+  root: string;
+  truncated: boolean;
+  entries: { name: string; path: string; kind: "dir" | "package" | "file" | "link"; size?: number; items?: number; modified: number }[];
+}
+
 /** A stage of a build; logStart/logEnd mark its output in the build's log. */
 export interface BuildStep {
   id: string; // "pub" | "build" | "collect" | "install-<n>"
@@ -113,6 +120,13 @@ export const api = {
   queue: (req: BuildRequest) => post<{ queued: number; skipped: SkippedBuild[] }>("/api/jobs", req),
   cancel: (id: string) => post(`/api/jobs/${id}/cancel`),
   resume: (id: string) => post(`/api/jobs/${id}/resume`),
+  files: async (id: string, path = ""): Promise<ArchiveListing> => {
+    const res = await fetch(`/api/jobs/${id}/files?path=${encodeURIComponent(path)}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error ?? res.statusText);
+    return data;
+  },
+  revealFile: (id: string, path: string) => post(`/api/jobs/${id}/files/reveal`, { path }),
   reveal: (id: string) => post(`/api/jobs/${id}/reveal`),
   organizer: (id: string) => post(`/api/jobs/${id}/organizer`),
   devices: async (): Promise<Device[]> => (await fetch("/api/devices")).json(),

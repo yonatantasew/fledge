@@ -2,6 +2,7 @@ import {
   ArrowDown01Icon,
   ArrowRight01Icon,
   Delete02Icon,
+  FolderTreeIcon,
   GridViewIcon,
   LayoutThreeColumnIcon,
   ListViewIcon,
@@ -21,16 +22,18 @@ import { cn } from "@/lib/utils";
 import { useFlavorLabel } from "@/project";
 import { MODE_LABEL, PLATFORM_ICON } from "./BuildForm";
 import { ARM64_ONLY, BuildActions, installText, shortPath, STATUS } from "./build-status";
+import { BuildFolder } from "./BuildFiles";
 
 const ORDER: JobStatus[] = ["running", "queued", "succeeded", "failed", "cancelled"];
 
 const GROUP_LABEL: Record<GroupBy, string> = { none: "No grouping", version: "Version", date: "Day", branch: "Branch", env: "Environment", status: "Status" };
 
-type Layout = "grid" | "list" | "columns";
+type Layout = "grid" | "list" | "columns" | "files";
 const LAYOUTS: { id: Layout; label: string; icon: IconSvgElement }[] = [
   { id: "grid", label: "Grid", icon: GridViewIcon },
   { id: "list", label: "List", icon: ListViewIcon },
   { id: "columns", label: "Columns: one per group (statuses when not grouped)", icon: LayoutThreeColumnIcon },
+  { id: "files", label: "Files: each build's folder, with its subfolders and files", icon: FolderTreeIcon },
 ];
 
 function stored<T extends string>(key: string, allowed: readonly T[], fallback: T): T {
@@ -54,8 +57,9 @@ function ago(t: number, now: number) {
 }
 
 /**
- * The builds, Argo CD style, in three layouts: a grid of tiles (facts in rows,
- * actions along the bottom), a dense list, or a board of columns, one per group.
+ * The builds, Argo CD style, in four layouts: a grid of tiles (facts in rows,
+ * actions along the bottom), a dense list, a board of columns (one per group),
+ * or their folders, opening into subfolders and files.
  * Each has the status as a coloured edge; filter, grouping and layout persist.
  */
 export function BuildTiles({ jobs, onSelect, showProject = false }: { jobs: Job[]; onSelect: (id: string) => void; showProject?: boolean }) {
@@ -190,7 +194,15 @@ export function BuildTiles({ jobs, onSelect, showProject = false }: { jobs: Job[
                 />
               )}
               {!collapsed.has(g.key) &&
-                (layout === "list" ? (
+                (layout === "files" ? (
+                  <ul className="divide-y overflow-hidden rounded-lg border">
+                    {g.builds.map((j) => (
+                      <li key={j.id}>
+                        <BuildFolder job={j} flavorLabel={flavorLabel} onSelect={onSelect} />
+                      </li>
+                    ))}
+                  </ul>
+                ) : layout === "list" ? (
                   <ul className="divide-y rounded-lg border">
                     {g.builds.map((j) => (
                       <li key={j.id}>
