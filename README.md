@@ -165,8 +165,11 @@ same way in review.
 Builds show as tiles, in the style of Argo CD: a coloured edge for the status,
 the facts in rows (status, device, source, checkout, version), and the actions
 along the bottom. The chips above them filter by status, and **Group** sorts
-them into foldable groups by version (build name and number), day, branch or
-environment, each with its count and statuses. Fledge records the version
+them into foldable groups by version (build name and number), day, branch,
+environment or status, each with its count and statuses. The layout buttons
+beside it switch between that **grid**, a dense **list** (one row per build),
+and **columns**: a board with the groups side by side, or the statuses when
+the builds aren't grouped. Fledge records the version
 each build was queued to make, so builds that stopped or failed before
 producing a file still group by version; older ones borrow it from other
 builds of the same commit when those agree. Click a tile for the
