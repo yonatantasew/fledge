@@ -1,6 +1,6 @@
 {
   "name": "@yonatantasew/fledge",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "private": true,
   "type": "module",
   "description": "Build, install and release Flutter apps from a local web UI: flavors × build types for Android and iOS, device installs, and release notes drafted with Claude.",
