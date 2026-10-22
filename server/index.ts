@@ -176,6 +176,7 @@ interface Job {
   error?: string;
   install?: { state: "installing" | "installed" | "failed" | "needs-replace"; device: string; message?: string; at: number };
   steps?: Step[]; // missing on builds recorded before steps were
+  version?: string; // the version it was queued to build (verified.version is what came out)
   argv?: string[]; // the exact command, kept so a stopped build can be resumed after a restart
   tree?: string; // fingerprint of the checkout when the build stopped or failed (see fingerprint())
   attempt?: number; // 2 and up once resumed
@@ -709,7 +710,10 @@ async function plan(body: unknown) {
       return { error: `${exe} isn't installed or isn't on PATH (${project.name}'s commands start with it; see "flutter" and "commands" in its config)` };
     }
   }
-  return { project: { id: project.id, name: project.name }, pubGet, checkout: info, builds, skipped };
+  // The version these builds will carry: pubspec's, with this queue's overrides.
+  const [pubName, pubNumber = ""] = info.version.split("+");
+  const version = `${parsed.options.buildName || pubName}+${parsed.options.buildNumber || pubNumber}`.replace(/\+$/, "");
+  return { project: { id: project.id, name: project.name }, pubGet, checkout: info, version, builds, skipped };
 }
 
 /** Queues a plan's builds; returns the new jobs. */
@@ -735,6 +739,7 @@ function enqueue(p: Exclude<Awaited<ReturnType<typeof plan>>, { error: unknown }
       createdAt: Date.now(),
     };
     job.argv = b.argv;
+    job.version = p.version;
     argvs.set(job.id, b.argv);
     jobs.push(job);
     added.push(job);
