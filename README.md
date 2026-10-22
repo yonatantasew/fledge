@@ -345,9 +345,18 @@ build fails or is stopped, nothing is posted.
    - **As each finishes:** the first build to finish posts the notes with
      its file right under them; each later build (or failure) is a reply in
      their thread.
+   Add **your note** under the generated notes (what to test, or that it's
+   a test deploy).
 4. **Build and deploy.** A strip above the builds follows it: building (and
    how many files are already uploaded), posting with upload progress, then
    posted. Its builds carry its name.
+
+The dialog remembers what you picked, per app and route: how to post, your
+note, and the channel for one-offs. Next time it opens that way, on this Mac
+(`~/.config/fledge/deploy-choices.json`, so the browser and the installed
+app agree). **Make this the route's default** writes the choice of how to post into
+the app's config instead, for everyone who uses it. That's offered when the
+config is your local file; a repo's `fledge.json` is edited in the repo.
 
 A deployment whose build failed is **held**. Resume the build (↻) and it
 carries on, **Post what built** sends the rest with a "Not built" line, or
