@@ -169,10 +169,12 @@ them into foldable groups by version (build name and number), day, branch,
 environment or status, each with its count and statuses. The layout buttons
 beside it switch between that **grid**, a dense **list** (one row per build),
 **columns** (a board with the groups side by side, or the statuses when the
-builds aren't grouped), and **files**: each build as its folder in
-`build/fledge/`, opening into its subfolders and files (the artifact, the
-`.xcarchive`, symbols, `build.log`, `job.json`) with their sizes, and **Show
-in Finder** and **Copy path** on each. Folders load as you open them, and
+builds aren't grouped), and **files**: Finder's column view of the builds'
+folders in `build/fledge/`. The builds are in the first column; picking one
+opens its folder (the artifact, the `.xcarchive`, symbols, `build.log`,
+`job.json`) in the next, each folder picked opens another column to the
+right, and the last shows what the picked item is (kind, size, when, where)
+with **Show in Finder** and **Copy path**. Folders load as they open, and
 nothing outside a build's folder can be listed or shown, links included. Fledge records the version
 each build was queued to make, so builds that stopped or failed before
 producing a file still group by version; older ones borrow it from other
