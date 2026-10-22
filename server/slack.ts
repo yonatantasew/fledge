@@ -5,7 +5,9 @@
 // ask for an upload URL, send the bytes there, then share the file.
 
 import { execFile } from "node:child_process";
-import { readFile, stat } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+import { Readable } from "node:stream";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
@@ -76,8 +78,30 @@ export async function shipFile(token: string, channel: string, file: { path: str
   return (await shipFiles(token, channel, [file], text, say))[0];
 }
 
+/** A file's bytes as a stream, reporting how many have gone so far. */
+function streamWithProgress(path: string, onBytes: (sent: number) => void) {
+  let sent = 0;
+  const counted = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, out) {
+      sent += chunk.byteLength;
+      onBytes(sent);
+      out.enqueue(chunk);
+    },
+  });
+  return (Readable.toWeb(createReadStream(path)) as ReadableStream<Uint8Array>).pipeThrough(counted);
+}
+
+export type UploadProgress = (file: string, sent: number, total: number) => void;
+
 /** Uploads files (at most 10) and shares them in one message in the channel. Returns their ids. */
-export async function shipFiles(token: string, channel: string, files: { path: string; name: string }[], text: string, say: (line: string) => void) {
+export async function shipFiles(
+  token: string,
+  channel: string,
+  files: { path: string; name: string }[],
+  text: string,
+  say: (line: string) => void,
+  progress: UploadProgress = () => {},
+) {
   if (!files.length || files.length > 10) throw new Error("one Slack message holds 1 to 10 files");
   const id = await channelId(token, channel);
   const uploaded: { id: string; title: string }[] = [];
@@ -85,7 +109,13 @@ export async function shipFiles(token: string, channel: string, files: { path: s
     const { size } = await stat(file.path);
     say(`Uploading ${file.name} (${(size / 1048576).toFixed(1)} MB) to ${channel}…\n`);
     const up = await api(token, "files.getUploadURLExternal", { filename: file.name, length: String(size) });
-    const sent = await fetch(String(up.upload_url), { method: "POST", body: await readFile(file.path) });
+    // Streamed from disk: a 600 MB APK never sits in memory.
+    const sent = await fetch(String(up.upload_url), {
+      method: "POST",
+      headers: { "content-type": "application/octet-stream", "content-length": String(size) },
+      body: streamWithProgress(file.path, (n) => progress(file.name, n, size)),
+      duplex: "half",
+    } as RequestInit);
     if (!sent.ok) throw new Error(`Slack refused the upload of ${file.name} (${sent.status})`);
     uploaded.push({ id: String(up.file_id), title: file.name });
   }

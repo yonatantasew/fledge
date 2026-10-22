@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import http from "node:http";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -6,6 +7,8 @@ import { after, test } from "node:test";
 import { channelId, shipFile, shipFiles } from "./slack.ts";
 
 const dir = mkdtempSync(path.join(tmpdir(), "fledge-slack-"));
+const realFetch = globalThis.fetch;
+const text = async (body: unknown) => (body instanceof ReadableStream ? await new Response(body).text() : Buffer.from(body as Uint8Array).toString());
 after(() => rmSync(dir, { recursive: true, force: true }));
 
 // A fake Slack: records every call and answers like the real API.
@@ -53,7 +56,7 @@ test("shipping uploads the bytes, then shares the file in the channel with the m
   ]);
   assert.equal(calls[0].auth, "Bearer xoxb-t");
   assert.equal(String(calls[0].body), "filename=app.apk&length=9");
-  assert.equal(Buffer.from(calls[1].body as Uint8Array).toString(), "apk bytes");
+  assert.equal(await text(calls[1].body), "apk bytes");
   const done = new URLSearchParams(String(calls[2].body));
   assert.deepEqual([done.get("files"), done.get("channel_id"), done.get("initial_comment")], [JSON.stringify([{ id: "F1", title: "app.apk" }]), "C9", "*demo* 1.0.0"]);
 });
@@ -93,4 +96,37 @@ test("several files go up one by one, then share in one message", async () => {
   assert.deepEqual(JSON.parse(done.get("files")!), [{ id: "F1", title: "a.apk" }, { id: "F2", title: "i.ipa" }]);
   assert.equal(calls.filter((c) => c.url.endsWith("completeUploadExternal")).length, 1);
   await assert.rejects(shipFiles("xoxb-t", "C9", [], "x", () => {}), /1 to 10 files/);
+});
+
+test("the bytes stream from disk with their length, reporting progress", async () => {
+  const big = path.join(dir, "big.apk");
+  writeFileSync(big, Buffer.alloc(3 * 1024 * 1024, 7));
+  const got: { length?: string; bytes: number } = { bytes: 0 };
+  const server = http.createServer((req, res) => {
+    got.length = req.headers["content-length"];
+    req.on("data", (c: Buffer) => (got.bytes += c.length));
+    req.on("end", () => res.end("OK"));
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const port = (server.address() as { port: number }).port;
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    const m = String(url).replace("https://slack.com/api/", "");
+    if (m === "files.getUploadURLExternal") return Response.json({ ok: true, upload_url: `http://127.0.0.1:${port}/up`, file_id: "F9" });
+    if (m === "files.completeUploadExternal") return Response.json({ ok: true });
+    return realFetch(url, init); // the upload itself goes over real HTTP
+  }) as typeof fetch;
+  const seen: number[] = [];
+  try {
+    await shipFiles("xoxb-t", "C9", [{ path: big, name: "big.apk" }], "m", () => {}, (_f, sent, total) => {
+      assert.equal(total, 3 * 1024 * 1024);
+      seen.push(sent);
+    });
+  } finally {
+    server.close();
+  }
+  assert.equal(got.length, String(3 * 1024 * 1024));
+  assert.equal(got.bytes, 3 * 1024 * 1024);
+  assert.ok(seen.length > 1, "progress more than once");
+  assert.equal(seen.at(-1), 3 * 1024 * 1024);
+  assert.deepEqual([...seen].sort((a, b) => a - b), seen, "only ever up");
 });

@@ -916,10 +916,10 @@ const deployments = new Deployer(
         file: file ? { path: file, name: path.basename(file), size: statSync(file).size } : undefined,
       };
     },
-    async post(channel, files, text) {
+    async post(channel, files, text, progress) {
       const token = await slackToken();
       if (!token) throw new Error("Slack isn't connected on this Mac: connect it from a build's Slack button");
-      await shipFiles(token, channel, files, text, () => {});
+      await shipFiles(token, channel, files, text, () => {}, progress);
     },
     cancelBuild(id) {
       const j = jobs.find((x) => x.id === id);

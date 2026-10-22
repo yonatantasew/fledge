@@ -23,6 +23,7 @@ export interface Deployment {
   createdAt: number;
   endedAt?: number;
   posted?: { at: number; files: string[]; missing: string[] };
+  progress?: string; // while posting: "uploading a.apk, 340 / 600 MB"
 }
 
 /** What a deployment needs to know about one of its builds. */
@@ -34,7 +35,7 @@ export interface DeployBuild {
 
 export interface DeployDeps {
   build(id: string): DeployBuild | undefined;
-  post(channel: string, files: { path: string; name: string }[], text: string): Promise<void>;
+  post(channel: string, files: { path: string; name: string }[], text: string, progress: (file: string, sent: number, total: number) => void): Promise<void>;
   cancelBuild(id: string): void;
   changed(list: Deployment[]): void; // persist and tell the page
 }
@@ -115,14 +116,21 @@ export class Deployer {
       `Files: ${built.map((b) => `${b.file!.name} (${mb(b.file!.size)})`).join(" · ")}`,
       ...(missing.length ? [`Not built: ${missing.map((b) => `${b.name} (${b.status})`).join(", ")}`] : []),
     ].join("\n");
+    let shown = 0;
+    const progress = (file: string, sent: number, total: number) => {
+      d.progress = `uploading ${file}, ${mb(sent)} / ${mb(total)}`;
+      // About once a second: every chunk would rewrite the history file thousands of times.
+      if (Date.now() - shown > 1000 || sent === total) ((shown = Date.now()), this.deps.changed(this.list));
+    };
     try {
-      await this.deps.post(d.channel, built.map((b) => b.file!), text);
+      await this.deps.post(d.channel, built.map((b) => b.file!), text, progress);
       d.status = "posted";
       d.posted = { at: Date.now(), files: built.map((b) => b.file!.name), missing: missing.map((b) => b.name) };
     } catch (e) {
       d.status = "failed";
       d.error = (e as Error).message.split("\n")[0];
     } finally {
+      delete d.progress;
       d.endedAt = Date.now();
       this.posting.delete(d.id);
       this.deps.changed(this.list);

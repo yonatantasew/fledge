@@ -10,15 +10,17 @@ function setup() {
   const posts: { channel: string; files: string[]; text: string }[] = [];
   const cancelled: string[] = [];
   let fail: string | null = null;
+  const seen: (string | null)[] = [];
   const deployer = new Deployer(
     {
       build: (id) => builds.get(id),
-      post: async (channel, files, text) => {
+      post: async (channel, files, text, progress) => {
         if (fail) throw new Error(fail);
+        for (const f of files) progress(f.name, 1048576, 2 * 1048576);
         posts.push({ channel, files: files.map((f) => f.name), text });
       },
       cancelBuild: (id) => cancelled.push(id),
-      changed: () => {},
+      changed: (list) => seen.push(list[0]?.progress ?? null),
     },
     [],
   );
@@ -28,7 +30,7 @@ function setup() {
   };
   const set = (id: string, b: Partial<DeployBuild>) => builds.set(id, { ...builds.get(id)!, ...b });
   const settle = () => new Promise((r) => setTimeout(r, 0));
-  return { deployer, d, set, posts, cancelled, settle, failWith: (m: string | null) => (fail = m) };
+  return { deployer, d, set, posts, cancelled, settle, seen, failWith: (m: string | null) => (fail = m) };
 }
 
 const apk = { path: "/x/app.apk", name: "android-staging-release.apk", size: 52 * 1048576 };
@@ -113,4 +115,16 @@ test("routes count their own deploys; one-offs by channel and environments", () 
   assert.equal(deployKey("qa", "#a", ["staging"]), "route:qa");
   assert.equal(deployKey(null, "#a", ["prod", "staging", "prod"]), deployKey(null, "#a", ["staging", "prod"]));
   assert.notEqual(deployKey(null, "#a", ["staging"]), deployKey(null, "#b", ["staging"]));
+});
+
+test("while posting, the deployment says how far the upload is; after, it doesn't", async () => {
+  const { deployer, d, set, settle, seen } = setup();
+  deployer.add(d);
+  set("a", { status: "succeeded", file: apk });
+  set("i", { status: "succeeded", file: ipa });
+  deployer.tick();
+  await settle();
+  assert.ok(seen.includes("uploading android-staging-release.apk, 1.0 MB / 2.0 MB"), JSON.stringify(seen));
+  assert.equal(d.progress, undefined);
+  assert.equal(d.status, "posted");
 });
