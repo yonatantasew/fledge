@@ -41,6 +41,7 @@ const TOOL_LABEL: Record<string, string> = {
   start_builds: "Queue builds",
   cancel_build: "Cancel a build",
   install_build: "Install a build",
+  ship_build: "Ship a build to Slack",
   publish_release: "Publish a release",
   jira_comment: "Comment on a ticket",
   jira_transition: "Move a ticket",

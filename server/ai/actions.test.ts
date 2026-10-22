@@ -48,6 +48,7 @@ const facts = {
   tickets: { "PROJ-1": { status: "In Review" }, "PROJ-2": { status: "In Progress" } },
 } as unknown as ReleaseFacts;
 const published: unknown[] = [];
+const shipped: string[] = [];
 
 const queued: unknown[] = [];
 const resumed: string[] = [];
@@ -83,6 +84,10 @@ const ctx: ToolContext = {
     if (device !== "phone1") throw new Error("that device is not connected");
     return { device: "Pixel (Android 16)", install: async (opts) => ({ state: "installed", ...opts }) };
   },
+  async prepareShip(build, note) {
+    if (build !== "done1") throw new Error("only a finished build with its file can be shipped");
+    return { channel: "#deployments", text: `*demo* staging release${note ? `\n${note}` : ""}`, file: "android-staging-release.apk", size: 52428800, ship: async () => (shipped.push(note), "Shipped.") };
+  },
   async releaseDraft(_app, _since, prerelease, exclude) {
     const f = { ...facts, prerelease, prs: facts.prs.filter((pr) => !exclude.includes(pr.number)) };
     return { facts: f, templates: { slack: "slack", github: "template notes" }, baseBranch: "main", bumpBranch: "chore/bump-1.4.0-2", jira: { from: "In Review", to: "Ready for test" } };
@@ -97,7 +102,7 @@ const yes = async () => true;
 const no = async () => false;
 
 test("actions are marked, and lookups aren't", () => {
-  for (const name of ["create_branch", "push_branch", "start_builds", "cancel_build", "resume_build", "install_build", "publish_release", "jira_comment", "jira_transition"]) {
+  for (const name of ["create_branch", "push_branch", "start_builds", "cancel_build", "resume_build", "install_build", "ship_build", "publish_release", "jira_comment", "jira_transition"]) {
     assert.ok(isAction(name), name);
   }
   assert.ok(!isAction("release_notes"));
@@ -266,4 +271,17 @@ test("resume_build names the attempt and the same command, and resumes only when
   assert.equal((await runTool("resume_build", { build_id: "stopped1" }, ctx, yes)).isError, false);
   assert.deepEqual(resumed, ["stopped1"]);
   assert.match((await runTool("resume_build", { build_id: "done1" }, ctx, yes)).content, /only a stopped or failed build/);
+});
+
+test("ship_build shows the channel, file and message, and ships only when approved", async () => {
+  let asked: Approval | undefined;
+  const declined = await runTool("ship_build", { build_id: "done1", note: "Check login" }, ctx, async (a) => ((asked = a), false));
+  assert.equal(declined.approval?.approved, false);
+  assert.deepEqual(shipped, []);
+  assert.equal(asked?.title, "Ship staging release apk to #deployments");
+  assert.ok(asked?.details.includes("android-staging-release.apk, 50.0 MB"));
+  assert.ok(asked?.details.some((d) => d.includes("Check login")));
+  assert.equal((await runTool("ship_build", { build_id: "done1", note: "Check login" }, ctx, yes)).isError, false);
+  assert.deepEqual(shipped, ["Check login"]);
+  assert.match((await runTool("ship_build", { build_id: "run1" }, ctx, yes)).content, /only a finished build/);
 });

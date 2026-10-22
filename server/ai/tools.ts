@@ -53,6 +53,8 @@ export interface ToolContext {
   prepareResume(id: string): Promise<{ attempt: number; resume(): void }>;
   /** Checks a build can go on the device now; install() runs it and reports how it went. Throws otherwise. */
   prepareInstall(buildId: string, deviceId: string): Promise<{ device: string; install(opts: { launch: boolean; replace: boolean }): Promise<unknown> }>;
+  /** What shipping a build to Slack would post; ship() posts it. Throws when it can't be shipped. */
+  prepareShip(buildId: string, note: string): Promise<{ channel: string; text: string; file: string; size: number; ship(): Promise<unknown> }>;
   /** The next release: its facts without the excluded PRs (and version bumps), and the template notes. Slow. */
   releaseDraft(
     appId: string,
@@ -537,6 +539,24 @@ const TOOLS: Tool[] = [
           opts.launch ? "Opens the app afterwards" : "Doesn't open the app",
         ],
         run: () => ready.install(opts),
+      };
+    },
+  },
+  {
+    def: {
+      name: "ship_build",
+      description:
+        "Upload a finished build (apk, appbundle or ipa) to the app's Slack channel with a message (needs the developer's approval). The channel and message come from the app's config; a note is added to the message.",
+      schema: obj({ build_id: str("The build's id from list_builds."), note: str("A short note for testers, e.g. what to test (optional).") }, ["build_id"]),
+    },
+    async prepare(i, ctx) {
+      const b = ctx.builds().find((x) => x.id === i.build_id);
+      if (!b) throw new Error("no build with that id");
+      const p = await ctx.prepareShip(b.id, typeof i.note === "string" ? i.note.slice(0, 2000) : "");
+      return {
+        title: `Ship ${b.flavor} ${b.mode} ${b.artifact} to ${p.channel}`,
+        details: [`${p.file}, ${(p.size / 1048576).toFixed(1)} MB`, `Built from ${b.branch} @ ${b.sha.slice(0, 8)}`, `Message: “${p.text.replace(/\n/g, " / ")}”`],
+        run: () => p.ship(),
       };
     },
   },

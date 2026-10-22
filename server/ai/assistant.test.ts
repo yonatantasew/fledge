@@ -28,6 +28,9 @@ const ctx: ToolContext = {
   prepareInstall: async () => {
     throw new Error("no devices");
   },
+  prepareShip: async () => {
+    throw new Error("this app has no Slack channel");
+  },
   releaseDraft: async () => {
     throw new Error("releases aren't set up for this app");
   },

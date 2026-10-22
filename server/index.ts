@@ -627,6 +627,22 @@ const assistantContext: ToolContext = {
       queue: () => enqueue(r).map((j) => j.id),
     };
   },
+  async prepareShip(buildId, note) {
+    const job = jobs.find((j) => j.id === buildId);
+    if (!job) throw new Error("no build with that id");
+    const plan = await shipPlan(job, note);
+    if ("error" in plan) throw new Error(plan.error);
+    return {
+      channel: plan.channel,
+      text: plan.text,
+      file: plan.file.name,
+      size: plan.size,
+      async ship() {
+        await runShip(job, plan);
+        return `Shipped ${plan.file.name} to ${plan.channel}.`;
+      },
+    };
+  },
   async releaseDraft(id, since, prerelease, exclude) {
     const p = await getProject(id);
     const r = p?.config?.release;
