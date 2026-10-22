@@ -49,6 +49,7 @@ const facts = {
 } as unknown as ReleaseFacts;
 const published: unknown[] = [];
 const shipped: string[] = [];
+const deploys: { notes: string }[] = [];
 
 const queued: unknown[] = [];
 const resumed: string[] = [];
@@ -84,6 +85,23 @@ const ctx: ToolContext = {
     if (device !== "phone1") throw new Error("that device is not connected");
     return { device: "Pixel (Android 16)", install: async (opts) => ({ state: "installed", ...opts }) };
   },
+  async deployments() {
+    return deploys;
+  },
+  async prepareDeploy(_app, req) {
+    if (req.route !== "qa" && !req.channel) throw new Error(`this app has no deploy route "${req.route}"`);
+    return {
+      label: req.route ? "QA: staging" : "Deploy",
+      channel: req.channel ?? "#fledge-experiment",
+      version: "1.3.1+4",
+      branch: "main",
+      sha: "7bb364f2aaaa",
+      since: "1a2b3c4d5555",
+      notes: "*demo* · QA: staging\n\nChanges since the last deploy (1a2b3c4d):\n1. A — PROJ-1\n   DRI: @A\n2. B — PROJ-2\n   DRI: @B",
+      builds: [{ name: "Staging release Android apk", confirm: false }, { name: "Prod release iOS ipa", confirm: true }],
+      start: (notes: string) => (deploys.push({ notes }), "d1"),
+    };
+  },
   async prepareShip(build, note) {
     if (build !== "done1") throw new Error("only a finished build with its file can be shipped");
     return { channel: "#deployments", text: `*demo* staging release${note ? `\n${note}` : ""}`, file: "android-staging-release.apk", size: 52428800, ship: async () => (shipped.push(note), "Shipped.") };
@@ -102,7 +120,7 @@ const yes = async () => true;
 const no = async () => false;
 
 test("actions are marked, and lookups aren't", () => {
-  for (const name of ["create_branch", "push_branch", "start_builds", "cancel_build", "resume_build", "install_build", "ship_build", "publish_release", "jira_comment", "jira_transition"]) {
+  for (const name of ["create_branch", "push_branch", "start_builds", "cancel_build", "resume_build", "install_build", "ship_build", "deploy", "publish_release", "jira_comment", "jira_transition"]) {
     assert.ok(isAction(name), name);
   }
   assert.ok(!isAction("release_notes"));
@@ -284,4 +302,20 @@ test("ship_build shows the channel, file and message, and ships only when approv
   assert.equal((await runTool("ship_build", { build_id: "done1", note: "Check login" }, ctx, yes)).isError, false);
   assert.deepEqual(shipped, ["Check login"]);
   assert.match((await runTool("ship_build", { build_id: "run1" }, ctx, yes)).content, /only a finished build/);
+});
+
+test("deploy describes the builds, the channel and the notes, and starts only when approved", async () => {
+  let asked: Approval | undefined;
+  await runTool("deploy", { app: "demo", route: "qa", note: "Check the feed" }, ctx, async (a) => ((asked = a), false));
+  assert.equal(deploys.length, 0, "declined: nothing started");
+  assert.equal(asked?.title, "Deploy QA: staging to #fledge-experiment");
+  assert.ok(asked?.details.includes("Builds: Staging release Android apk, Prod release iOS ipa"));
+  assert.ok(asked?.details.includes("Notes: 2 changes since the last deploy (1a2b3c4d), plus your note"));
+  assert.ok(asked?.details.some((d) => d.includes("ask for confirmation: Prod release iOS ipa")));
+  const r = await runTool("deploy", { app: "demo", route: "qa", note: "Check the feed" }, ctx, yes);
+  assert.equal(r.isError, false, r.content);
+  assert.match(deploys[0].notes, /DRI: @B\n\nCheck the feed$/);
+  assert.match((await runTool("deploy", { app: "demo" }, ctx, yes)).content, /a route, or builds and a channel/);
+  assert.match((await runTool("deploy", { app: "demo", route: "nope" }, ctx, yes)).content, /no deploy route "nope"/);
+  assert.equal(isAction("list_deployments"), false);
 });

@@ -42,6 +42,8 @@ const TOOL_LABEL: Record<string, string> = {
   cancel_build: "Cancel a build",
   install_build: "Install a build",
   ship_build: "Ship a build to Slack",
+  deploy: "Deploy",
+  list_deployments: "Looked at deployments",
   publish_release: "Publish a release",
   jira_comment: "Comment on a ticket",
   jira_transition: "Move a ticket",

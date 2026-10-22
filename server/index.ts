@@ -582,6 +582,7 @@ const assistantContext: ToolContext = {
         flavors: p.config.flavors.map(({ name, label, flavor, target, confirm }) => ({ name, label, flavor, target, confirm })),
         toggles: p.config.toggles.map(({ id, label }) => ({ id, label })),
         commands: p.config.commands ?? generateCommands(p.config),
+        deploy: p.config.deploy,
         release: p.config.release && {
           repo: p.config.release.github.repo,
           baseBranch: p.config.release.github.baseBranch,
@@ -632,6 +633,33 @@ const assistantContext: ToolContext = {
       builds: r.builds.map((b) => ({ flavor: b.flavor, label: label(b.flavor)?.label ?? b.flavor, confirm: !!label(b.flavor)?.confirm, mode: b.mode, platform: b.platform, artifact: b.artifact })),
       skipped: r.skipped.map((s) => `${s.flavor} ${s.mode} ${s.platform}: ${s.reason}`),
       queue: () => enqueue(r).map((j) => j.id),
+    };
+  },
+  async deployments(appId) {
+    return deployments.all(appId).map((d) => ({
+      id: d.id, label: d.label, channel: d.channel, status: d.status, error: d.error, progress: d.progress,
+      branch: d.branch, sha: d.sha.slice(0, 8), builds: d.builds.map((b) => ({ id: b, status: jobs.find((j) => j.id === b)?.status ?? "cleared" })),
+      createdAt: new Date(d.createdAt).toISOString(), posted: d.posted,
+    }));
+  },
+  async prepareDeploy(appId, req) {
+    const r = await deployRequest({ project: appId, ...req });
+    if ("error" in r) throw new Error(r.error);
+    const n = await deployNotes(r);
+    const flavors = r.project.config!.flavors;
+    return {
+      label: r.label,
+      channel: r.channel,
+      version: r.plan.version,
+      branch: r.plan.checkout.branch,
+      sha: r.head,
+      since: n.since,
+      notes: n.notes,
+      builds: r.plan.builds.map((b) => {
+        const f = flavors.find((x) => x.name === b.flavor);
+        return { name: `${f?.label ?? b.flavor} ${b.mode} ${b.platform === "ios" ? "iOS" : "Android"} ${b.artifact}`, confirm: !!f?.confirm };
+      }),
+      start: (notes: string) => startDeploy(r, notes).id,
     };
   },
   async prepareShip(buildId, note) {
@@ -968,6 +996,20 @@ async function deployRequest(b: Record<string, unknown>) {
   return { project, route: route?.id ?? null, label, channel, plan: p, head, key };
 }
 
+/** Queues a deploy's builds and starts waiting for them. */
+function startDeploy(r: Exclude<Awaited<ReturnType<typeof deployRequest>>, { error: string }>, notes: string) {
+  const id = `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const queued = enqueue(r.plan);
+  for (const j of queued) j.deployment = id;
+  deployments.add({
+    id, project: r.project.id, route: r.route, key: r.key, label: r.label, channel: r.channel,
+    checkout: r.plan.checkout.path, branch: r.plan.checkout.branch, sha: r.head,
+    builds: queued.map((j) => j.id), notes, status: "building", createdAt: Date.now(),
+  });
+  publishJobs();
+  return { id, builds: queued.map((j) => j.id) };
+}
+
 /** The notes a deploy would post: what changed since the last deploy under the same key. */
 async function deployNotes(r: Exclude<Awaited<ReturnType<typeof deployRequest>>, { error: string }>) {
   const since = deployments.lastPosted(r.project.id, r.key);
@@ -1253,16 +1295,7 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
     if (b.notes.length > 30_000) return send(res, 400, { error: "the notes are too long for one Slack message" });
     const r = await deployRequest(b);
     if ("error" in r) return send(res, 400, r);
-    const id = `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-    const queued = enqueue(r.plan);
-    for (const j of queued) j.deployment = id;
-    deployments.add({
-      id, project: r.project.id, route: r.route, key: r.key, label: r.label, channel: r.channel,
-      checkout: r.plan.checkout.path, branch: r.plan.checkout.branch, sha: r.head,
-      builds: queued.map((j) => j.id), notes: b.notes, status: "building", createdAt: Date.now(),
-    });
-    publishJobs();
-    return send(res, 200, { id, builds: queued.map((j) => j.id) });
+    return send(res, 200, startDeploy(r, b.notes));
   }
   const deployRoute = /^\/api\/deployments\/([a-z0-9]+)\/(post|cancel)$/.exec(url.pathname);
   if (deployRoute && req.method === "POST") {

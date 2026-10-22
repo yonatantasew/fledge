@@ -26,6 +26,7 @@ export interface ToolContext {
       toggles: { id: string; label: string }[];
       commands: unknown;
       release: unknown;
+      deploy?: unknown;
     } | null;
     source: string | null;
     error?: string;
@@ -53,6 +54,13 @@ export interface ToolContext {
   prepareResume(id: string): Promise<{ attempt: number; resume(): void }>;
   /** Checks a build can go on the device now; install() runs it and reports how it went. Throws otherwise. */
   prepareInstall(buildId: string, deviceId: string): Promise<{ device: string; install(opts: { launch: boolean; replace: boolean }): Promise<unknown> }>;
+  /** The app's deployments, newest first. */
+  deployments(appId: string): Promise<unknown[]>;
+  /** What a deploy would do and post (notes since the last deploy); start() queues it. Throws when it can't. */
+  prepareDeploy(
+    appId: string,
+    req: { route?: string; targets?: unknown; options?: unknown; channel?: string; checkout?: string },
+  ): Promise<{ label: string; channel: string; version: string; branch: string; sha: string; since: string | null; notes: string; builds: { name: string; confirm: boolean }[]; start(notes: string): string }>;
   /** What shipping a build to Slack would post; ship() posts it. Throws when it can't be shipped. */
   prepareShip(buildId: string, note: string): Promise<{ channel: string; text: string; file: string; size: number; ship(): Promise<unknown> }>;
   /** The next release: its facts without the excluded PRs (and version bumps), and the template notes. Slow. */
@@ -156,7 +164,7 @@ const TOOLS: Tool[] = [
   {
     def: {
       name: "app_overview",
-      description: "An app's environments (and their native flavors / entry files), the build commands from its config, its switches, and its release settings.",
+      description: "An app's environments (and their native flavors / entry files), the build commands from its config, its switches, its release settings, and its deploy routes.",
       schema: obj({ app: APP }, ["app"]),
     },
     async run(i, ctx) {
@@ -334,6 +342,17 @@ const TOOLS: Tool[] = [
         channelNote: d.templates.slack,
         githubNotes: d.templates.github,
       };
+    },
+  },
+  {
+    def: {
+      name: "list_deployments",
+      description: "The app's deployments (builds posted together with notes to a channel), newest first: status (building, posting, posted, held, failed, cancelled), why it's held or failed, upload progress, and each build's status.",
+      schema: obj({ app: APP, limit: num("How many (default 10, max 50).") }, ["app"]),
+    },
+    async run(i, ctx) {
+      const a = await needApp(ctx, i.app);
+      return (await ctx.deployments(a.id)).slice(0, Math.min(50, Math.max(1, Number(i.limit ?? 10))));
     },
   },
   // ------------------------------------------------------------------ actions
@@ -557,6 +576,68 @@ const TOOLS: Tool[] = [
         title: `Ship ${b.flavor} ${b.mode} ${b.artifact} to ${p.channel}`,
         details: [`${p.file}, ${(p.size / 1048576).toFixed(1)} MB`, `Built from ${b.branch} @ ${b.sha.slice(0, 8)}`, `Message: “${p.text.replace(/\n/g, " / ")}”`],
         run: () => p.ship(),
+      };
+    },
+  },
+  {
+    def: {
+      name: "deploy",
+      description:
+        "Build and post to Slack in one go (needs the developer's approval): a deploy route from the app's config, or builds and a channel. Once every build has built, one message goes out with notes (what changed since the last deploy) and all the files; if a build fails, nothing is posted. A note is added under the notes.",
+      schema: obj(
+        {
+          app: APP,
+          route: str("A deploy route's id from the app's config (app_overview lists them)."),
+          builds: {
+            type: "array",
+            description: "Instead of a route: the builds (at most 10).",
+            items: obj(
+              {
+                environment: str("The environment's name."),
+                platform: str("android or ios.", { enum: ["android", "ios"] }),
+                mode: str("Build type.", { enum: ["debug", "profile", "release"] }),
+              },
+              ["environment", "platform", "mode"],
+            ),
+          },
+          channel: str("Instead of a route: the Slack channel, like #deployments."),
+          android_output: str("With builds: apk (default) or appbundle.", { enum: ["apk", "appbundle"] }),
+          ios_output: str("With builds: ipa (default) or app.", { enum: ["ipa", "app"] }),
+          export_method: str("With builds, for an ipa (default app-store).", { enum: ["app-store", "ad-hoc", "development"] }),
+          checkout: str("A checkout path or branch (default: the main checkout)."),
+          note: str("A line for testers added under the notes, e.g. what to test."),
+        },
+        ["app"],
+      ),
+    },
+    async prepare(i, ctx) {
+      const a = await needApp(ctx, i.app);
+      if (!i.route && !(i.builds && i.channel)) throw new Error("give a route, or builds and a channel");
+      const c = await needCheckout(ctx, a.id, i.checkout);
+      const req = i.route
+        ? { route: String(i.route), checkout: c.path }
+        : {
+            checkout: c.path,
+            channel: String(i.channel),
+            targets: (i.builds as { environment: string; platform: string; mode: string }[]).map((b) => ({ platform: b.platform, flavor: b.environment, mode: b.mode })),
+            options: { androidArtifact: i.android_output, iosArtifact: i.ios_output, exportMethod: i.export_method },
+          };
+      const d = await ctx.prepareDeploy(a.id, req);
+      const notes = typeof i.note === "string" && i.note.trim() ? `${d.notes}\n\n${i.note.trim()}` : d.notes;
+      const items = notes.split("\n").filter((l) => /^\d+\. /.test(l)).length;
+      const confirm = d.builds.filter((b) => b.confirm).map((b) => b.name);
+      return {
+        title: `Deploy ${d.label} to ${d.channel}`,
+        details: [
+          `Builds: ${d.builds.map((b) => b.name).join(", ")}`,
+          `From ${d.branch} @ ${d.sha.slice(0, 8)}, version ${d.version}`,
+          `Notes: ${items ? `${items} change${items === 1 ? "" : "s"}` : "no listed changes"} since ${d.since ? `the last deploy (${d.since.slice(0, 8)})` : "the last release"}${i.note ? ", plus your note" : ""}`,
+          ...(confirm.length ? [`Includes builds that ask for confirmation: ${confirm.join(", ")}`] : []),
+          "Posts once every build has built; nothing is posted if one fails",
+        ],
+        async run() {
+          return { deployment: d.start(notes), note: "list_deployments shows its progress" };
+        },
       };
     },
   },
