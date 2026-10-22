@@ -23,6 +23,7 @@ import { cancelLogin, firebaseStatus, onFirebaseChange, startLogin } from "./fir
 import { bumpValues, templateDeploy, templateGithub, templateSlack, type ReleaseFacts } from "./notes.ts";
 import { changesBetween, connections, gatherFacts, notesRequest, publish, releases, validatePublish } from "./release.ts";
 import { Deployer, deployKey, type Deployment } from "./deploy.ts";
+import { choiceStore, setRoutePost } from "./choices.ts";
 import { answerApproval, getConversation, listConversations, newConversation, pendingApprovals, send as sendToAssistant } from "./ai/agent.ts";
 import { availableModels, connectorFor, listProviders, removeProvider, saveProvider, setActive } from "./ai/providers.ts";
 import { MCP_CONVERSATION, mcpServer } from "./ai/mcp.ts";
@@ -972,6 +973,9 @@ const deployments = new Deployer(
 );
 deployer = deployments;
 
+// What was picked in the deploy dialog last time, per app and route.
+const choices = choiceStore(FLEDGE_HOME);
+
 /** A deploy request: a route of the app's, or the builds and channel picked by hand. */
 async function deployRequest(b: Record<string, unknown>) {
   const project = await getProject(b.project);
@@ -1303,15 +1307,41 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
       notes: n.notes,
       post: r.mode,
       onFailure: r.onFailure,
+      remembered: await choices.get(r.project.id, r.route),
+      // A route's default can be saved into a config file that's this Mac's, not a repo's fledge.json.
+      canSaveDefault: !!r.route && (r.project.source === "local" || r.project.source === "explicit"),
     });
   }
+  // What was picked last time for this app and route (route absent: one-offs).
+  if (url.pathname === "/api/deploy/choices" && req.method === "GET") {
+    return send(res, 200, await choices.get(url.searchParams.get("project") ?? "", url.searchParams.get("route")));
+  }
+
+  // Makes a choice the route's default, in the app's config.
+  if (url.pathname === "/api/deploy/route-default" && req.method === "POST") {
+    const b = (await readJson(req)) as Record<string, unknown>;
+    const project = await getProject(b.project);
+    if (!project?.configFile || (project.source !== "local" && project.source !== "explicit")) {
+      return send(res, 400, { error: "this app's config is the repo's fledge.json; change the route's post there" });
+    }
+    if ((b.post !== "together" && b.post !== "as-built") || (b.onFailure !== "hold" && b.onFailure !== "post-built")) return send(res, 400, { error: "post or onFailure isn't one fledge knows" });
+    return setRoutePost(project.configFile, String(b.route), b.post, b.onFailure).then(
+      () => send(res, 200, { ok: true, file: project.configFile }),
+      (e: Error) => send(res, 400, { error: e.message }),
+    );
+  }
+
   if (url.pathname === "/api/deploy" && req.method === "POST") {
     const b = (await readJson(req, 256 << 10)) as Record<string, unknown>;
     if (typeof b.notes !== "string" || !b.notes.trim()) return send(res, 400, { error: "the notes are empty" });
     if (b.notes.length > 30_000) return send(res, 400, { error: "the notes are too long for one Slack message" });
     const r = await deployRequest(b);
     if ("error" in r) return send(res, 400, r);
-    return send(res, 200, startDeploy(r, b.notes));
+    // The note line is kept apart so it can be offered again next time.
+    const note = typeof b.note === "string" ? b.note.trim().slice(0, 2000) : "";
+    const started = startDeploy(r, note ? `${b.notes.trim()}\n\n${note}` : b.notes);
+    await choices.set(r.project.id, r.route, { post: r.mode, onFailure: r.onFailure, channel: r.route ? undefined : r.channel, note }).catch(() => {});
+    return send(res, 200, started);
   }
   const deployRoute = /^\/api\/deployments\/([a-z0-9]+)\/(post|cancel)$/.exec(url.pathname);
   if (deployRoute && req.method === "POST") {
