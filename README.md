@@ -164,7 +164,12 @@ same way in review.
 
 Builds show as tiles, in the style of Argo CD: a coloured edge for the status,
 the facts in rows (status, device, source, checkout, version), and the actions
-along the bottom. The chips above them filter by status. Click a tile for the
+along the bottom. The chips above them filter by status, and **Group** sorts
+them into foldable groups by version (build name and number), day, branch or
+environment, each with its count and statuses. Fledge records the version
+each build was queued to make, so builds that stopped or failed before
+producing a file still group by version; older ones borrow it from other
+builds of the same commit when those agree. Click a tile for the
 build's details: its steps as a tree, from the source through `pub get`, the
 build and the artifact to each phone it was installed on, each with its state
 and time. Click a step to see only its part of the log. Builds made before
