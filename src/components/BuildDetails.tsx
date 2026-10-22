@@ -58,7 +58,10 @@ function legacySteps(job: Job): Partial<Record<"pub" | "build" | "collect", Node
 function nodes(job: Job, now: number): { main: TreeNode[]; installs: TreeNode[] } {
   const steps = job.steps;
   const legacy = steps ? null : legacySteps(job);
-  const step = (id: string) => steps?.find((s) => s.id === id);
+  // A resumed build has steps per attempt, each attempt starting with pub get;
+  // the tree shows the latest attempt (its installs and ships are kept for all).
+  const attempt = steps?.slice(Math.max(0, steps.findLastIndex((s) => s.id === "pub")));
+  const step = (id: string) => attempt?.find((s) => s.id === id);
   const node = (id: "pub" | "build" | "collect", base: Omit<TreeNode, "state" | "range" | "key">): TreeNode => {
     const s = step(id);
     return {
@@ -173,6 +176,7 @@ export function BuildDetails({ job, log, onBack }: { job: Job; log: string | und
           <span className={cn("flex items-center gap-1 text-sm", job.status === "failed" ? "text-destructive" : "text-muted-foreground")}>
             <HugeiconsIcon icon={s.icon} className={cn("size-4", s.className)} />
             {s.label}
+            {(job.attempt ?? 1) > 1 ? ` · attempt ${job.attempt}` : ""}
             {job.startedAt && end ? ` · ${duration(end - job.startedAt)}` : ""}
           </span>
           <div className="ml-auto">

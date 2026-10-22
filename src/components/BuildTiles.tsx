@@ -120,6 +120,7 @@ export function BuildTiles({ jobs, onSelect, showProject = false }: { jobs: Job[
                       <HugeiconsIcon icon={s.icon} className={cn("size-3.5 shrink-0", s.className)} />
                       <span className="truncate" title={j.error}>
                         {s.label}
+                        {(j.attempt ?? 1) > 1 && <span className="text-muted-foreground"> · attempt {j.attempt}</span>}
                         {waiting && <span className="text-muted-foreground"> · {waiting}</span>}
                         {j.status === "failed" && j.error && <span className="text-muted-foreground"> · {j.error}</span>}
                       </span>

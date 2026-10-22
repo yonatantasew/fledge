@@ -53,6 +53,7 @@ export interface Job {
   error?: string;
   install?: { state: "installing" | "installed" | "failed" | "needs-replace"; device: string; message?: string; at: number };
   steps?: BuildStep[]; // missing on builds recorded before steps were
+  attempt?: number; // 2 and up once resumed
 }
 
 /** A stage of a build; logStart/logEnd mark its output in the build's log. */
@@ -110,6 +111,7 @@ export const api = {
   plan: (req: BuildRequest) => post<PlanResult>("/api/plan", req),
   queue: (req: BuildRequest) => post<{ queued: number; skipped: SkippedBuild[] }>("/api/jobs", req),
   cancel: (id: string) => post(`/api/jobs/${id}/cancel`),
+  resume: (id: string) => post(`/api/jobs/${id}/resume`),
   reveal: (id: string) => post(`/api/jobs/${id}/reveal`),
   organizer: (id: string) => post(`/api/jobs/${id}/organizer`),
   devices: async (): Promise<Device[]> => (await fetch("/api/devices")).json(),

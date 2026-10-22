@@ -1,5 +1,6 @@
-import { Alert02Icon, Archive02Icon, Cancel01Icon, CheckmarkCircle02Icon, Clock01Icon, FolderOpenIcon, Loading03Icon, StopIcon } from "@hugeicons/core-free-icons";
+import { Alert02Icon, Archive02Icon, Cancel01Icon, CheckmarkCircle02Icon, Clock01Icon, FolderOpenIcon, Loading03Icon, RotateClockwiseIcon, StopIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { useState } from "react";
 import { api, type Job, type JobStatus } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -59,12 +60,36 @@ function IconAction({ label, icon, onClick, className }: { label: string; icon: 
   );
 }
 
-/** What can be done with a build right now: cancel it, install it, open its archive, show it in Finder. */
+/** What can be done with a build right now: cancel or resume it, install it, open its archive, show it in Finder. */
 export function BuildActions({ job }: { job: Job }) {
+  // Why Resume was refused (the checkout moved, files changed…), until the build changes.
+  const [blocked, setBlocked] = useState<{ status: JobStatus; reason: string } | null>(null);
+  const refused = blocked?.status === job.status ? blocked.reason : null;
+  async function resume() {
+    try {
+      await api.resume(job.id);
+      setBlocked(null);
+    } catch (e) {
+      setBlocked({ status: job.status, reason: (e as Error).message });
+    }
+  }
   return (
-    <div className="flex items-center gap-0.5">
+    <div className="flex min-w-0 items-center gap-0.5">
       {(job.status === "queued" || job.status === "running") && (
         <IconAction label="Cancel" icon={StopIcon} className="text-destructive hover:text-destructive" onClick={() => void api.cancel(job.id)} />
+      )}
+      {(job.status === "cancelled" || job.status === "failed") && (
+        <IconAction
+          label={refused ? `Can't resume: ${refused}` : "Resume: run the same command again, reusing the finished work"}
+          icon={RotateClockwiseIcon}
+          className={cn(refused && "text-muted-foreground")}
+          onClick={() => void resume()}
+        />
+      )}
+      {refused && (
+        <span className="truncate text-[11px] text-destructive" title={refused}>
+          {refused}
+        </span>
       )}
       {INSTALLABLE(job) && <InstallMenu job={job} />}
       {job.status === "succeeded" && job.xcarchive && (
