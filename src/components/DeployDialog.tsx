@@ -20,6 +20,8 @@ const HOW: { id: string; post: PostMode; onFailure: OnFailure; label: string; hi
   { id: "as-built", post: "as-built", onFailure: "hold", label: "As each finishes", hint: "The notes with the first build to finish; each later one replies in their thread." },
 ];
 
+const howId = (c: { post: PostMode; onFailure: OnFailure }) => (c.post === "as-built" ? "as-built" : c.onFailure === "post-built" ? "post-built" : "together");
+
 /**
  * Start a deployment: its builds, where it posts, and the notes (what changed
  * since the last deploy), editable. Once all the builds have built, the notes
@@ -47,6 +49,8 @@ export function DeployDialog({
   const [confirmed, setConfirmed] = useState(false);
   const [starting, setStarting] = useState(false);
   const [how, setHow] = useState("together");
+  const [note, setNote] = useState("");
+  const [savedDefault, setSavedDefault] = useState<string | null>(null);
 
   const request = (): DeployWhat | null => (!what ? null : oneOff ? ({ ...what, channel } as DeployWhat) : what);
 
@@ -60,7 +64,8 @@ export function DeployDialog({
       const p = await deployApi.preview(r);
       setPreview(p);
       setNotes(p.notes);
-      setHow(p.post === "as-built" ? "as-built" : p.onFailure === "post-built" ? "post-built" : "together");
+      // Your last choice for this route, else the route's default.
+      setHow(howId(p.remembered ?? p));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -69,14 +74,22 @@ export function DeployDialog({
   }
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !what) return;
     setPreview(null);
     setNotes("");
     setError(null);
     setConfirmed(false);
+    setSavedDefault(null);
     setChannel(project.shipChannel ?? "");
+    setNote("");
+    const route = "route" in what ? what.route : null;
+    // What was picked last time: the one-off channel is needed before the notes, the note line after.
+    void deployApi.choices(what.project, route).then((c) => {
+      if (c?.channel && !route) setChannel(c.channel);
+      if (c?.note) setNote(c.note);
+    }, () => {});
     // A route knows its channel: gather the notes straight away. A one-off asks for the channel first.
-    if (what && "route" in what) void gather();
+    if (route) void gather();
   }, [open]);
 
   const confirmNames = [...new Set((preview?.builds ?? []).filter((b) => project.flavors.find((f) => f.name === b.flavor)?.confirm).map((b) => flavorLabel(b.flavor)))];
@@ -89,7 +102,7 @@ export function DeployDialog({
     setError(null);
     try {
       const chosen = HOW.find((h) => h.id === how)!;
-      const d = await deployApi.start(r, notes, { post: chosen.post, onFailure: chosen.onFailure });
+      const d = await deployApi.start(r, notes, { post: chosen.post, onFailure: chosen.onFailure }, note);
       onStarted(d.id);
       onOpenChange(false);
     } catch (e) {
@@ -168,6 +181,43 @@ export function DeployDialog({
                   </button>
                 ))}
               </div>
+              <p className="text-xs text-muted-foreground">
+                {how === howId(preview) ? (
+                  "The route's default."
+                ) : (
+                  <>
+                    {preview.remembered && how === howId(preview.remembered) ? "Your last choice. " : ""}
+                    {"route" in (what ?? {}) ? `The route's default is ${HOW.find((h) => h.id === howId(preview))!.label.toLowerCase()}.` : "One-off deploys default to together."}
+                    {preview.canSaveDefault && what && "route" in what && (
+                      <>
+                        {" "}
+                        {savedDefault === how ? (
+                          <span className="text-success">Saved as the route's default.</span>
+                        ) : (
+                          <button
+                            type="button"
+                            className="underline underline-offset-2 hover:text-foreground"
+                            onClick={() => {
+                              const chosen = HOW.find((h) => h.id === how)!;
+                              void deployApi.saveRouteDefault(what.project, what.route, { post: chosen.post, onFailure: chosen.onFailure }).then(
+                                // It is the route's default now.
+                                () => (setSavedDefault(how), setPreview({ ...preview, post: chosen.post, onFailure: chosen.onFailure })),
+                                (e: Error) => setError(e.message),
+                              );
+                            }}
+                          >
+                            Make this the route's default
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </>
+                )}
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="deploy-note">Your note (added under the notes, offered again next time)</Label>
+              <Textarea id="deploy-note" rows={2} placeholder="What to test, or that this is a test deploy…" value={note} onChange={(e) => setNote(e.target.value)} />
             </div>
             {needsConfirm && (
               <label className="flex items-center gap-2 text-xs text-warning">

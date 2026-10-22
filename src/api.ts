@@ -566,14 +566,28 @@ export interface DeployPreview {
   skipped: SkippedBuild[];
   since: string | null;
   notes: string;
+  post: PostMode; // the route's default (one-offs: together, hold)
+  onFailure: OnFailure;
+  remembered: DeployChoice | null;
+  canSaveDefault: boolean;
+}
+
+/** What was picked in the deploy dialog last time, per app and route. */
+export interface DeployChoice {
   post: PostMode;
   onFailure: OnFailure;
+  channel?: string;
+  note?: string;
 }
 
 export const deployApi = {
   preview: (what: DeployWhat) => post<DeployPreview>("/api/deploy/preview", what),
-  start: (what: DeployWhat, notes: string, how: { post: PostMode; onFailure: OnFailure }) =>
-    post<{ id: string; builds: string[] }>("/api/deploy", { ...what, notes, ...how }),
+  start: (what: DeployWhat, notes: string, how: { post: PostMode; onFailure: OnFailure }, note: string) =>
+    post<{ id: string; builds: string[] }>("/api/deploy", { ...what, notes, ...how, note }),
+  choices: (project: string, route: string | null) =>
+    send<DeployChoice | null>("GET", `/api/deploy/choices?project=${encodeURIComponent(project)}${route ? `&route=${encodeURIComponent(route)}` : ""}`),
+  saveRouteDefault: (project: string, route: string, how: { post: PostMode; onFailure: OnFailure }) =>
+    post<{ ok: true; file: string }>("/api/deploy/route-default", { project, route, ...how }),
   list: (project: string) => send<Deployment[]>("GET", `/api/deployments?project=${encodeURIComponent(project)}`),
   postWhatBuilt: (id: string) => post<Deployment>(`/api/deployments/${id}/post`),
   cancel: (id: string) => post<Deployment>(`/api/deployments/${id}/cancel`),
