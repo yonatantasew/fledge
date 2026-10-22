@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
-import { channelId, shipFile, shipFiles } from "./slack.ts";
+import { channelId, postMessage, shareFiles, shipFile, shipFiles } from "./slack.ts";
 
 const dir = mkdtempSync(path.join(tmpdir(), "fledge-slack-"));
 const realFetch = globalThis.fetch;
@@ -129,4 +129,17 @@ test("the bytes stream from disk with their length, reporting progress", async (
   assert.ok(seen.length > 1, "progress more than once");
   assert.equal(seen.at(-1), 3 * 1024 * 1024);
   assert.deepEqual([...seen].sort((a, b) => a - b), seen, "only ever up");
+});
+
+test("a message returns its timestamp; replies and shared files go into its thread", async () => {
+  const calls = fakeSlack({ "chat.postMessage": { ok: true, ts: "1792.0001" }, "files.completeUploadExternal": { ok: true } });
+  assert.equal(await postMessage("xoxb-t", "C9", "notes"), "1792.0001");
+  await postMessage("xoxb-t", "C9", "iOS failed", "1792.0001");
+  await shareFiles("xoxb-t", "C9", [{ id: "F1", title: "i.ipa" }], "iOS is ready", "1792.0001");
+  await shareFiles("xoxb-t", "C9", [{ id: "F2", title: "a.apk" }], "");
+  const body = (n: number) => Object.fromEntries(new URLSearchParams(String(calls[n].body)));
+  assert.deepEqual(body(0), { channel: "C9", text: "notes" });
+  assert.equal(body(1).thread_ts, "1792.0001");
+  assert.deepEqual([body(2).thread_ts, body(2).initial_comment], ["1792.0001", "iOS is ready"]);
+  assert.ok(!("initial_comment" in body(3)) && !("thread_ts" in body(3)), "no empty comment, no thread");
 });

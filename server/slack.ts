@@ -59,15 +59,22 @@ export async function whoAmI(token: string) {
   return { team: String(r.team ?? ""), bot: String(r.user ?? "") };
 }
 
-/** "#deployments" → its id (channel ids pass through). */
+const channels = new Map<string, { id: string; at: number }>();
+
+/** "#deployments" → its id (channel ids pass through). Remembered for ten minutes. */
 export async function channelId(token: string, channel: string) {
   if (!channel.startsWith("#")) return channel;
+  const known = channels.get(`${token.slice(-6)}${channel}`);
+  if (known && Date.now() - known.at < 600_000) return known.id;
   const name = channel.slice(1);
   let cursor = "";
   do {
     const r = await api(token, "conversations.list", { types: "public_channel,private_channel", exclude_archived: "true", limit: "1000", ...(cursor ? { cursor } : {}) });
     const hit = (r.channels as { id: string; name: string }[]).find((c) => c.name === name);
-    if (hit) return hit.id;
+    if (hit) {
+      channels.set(`${token.slice(-6)}${channel}`, { id: hit.id, at: Date.now() });
+      return hit.id;
+    }
     cursor = (r.response_metadata as { next_cursor?: string } | undefined)?.next_cursor ?? "";
   } while (cursor);
   throw new Error(`Slack can't find ${channel}; invite the bot there (private channels are invisible to it until then)`);
@@ -93,6 +100,42 @@ function streamWithProgress(path: string, onBytes: (sent: number) => void) {
 
 export type UploadProgress = (file: string, sent: number, total: number) => void;
 
+/**
+ * Sends one file's bytes to Slack, streamed from disk, without sharing it
+ * anywhere yet: shareFiles does that (Slack kept such an upload for at least
+ * 15 minutes in a test; it discards ones never shared). Returns its id.
+ */
+export async function uploadFile(token: string, file: { path: string; name: string }, progress: UploadProgress = () => {}) {
+  const { size } = await stat(file.path);
+  const up = await api(token, "files.getUploadURLExternal", { filename: file.name, length: String(size) });
+  // Streamed from disk: a 600 MB APK never sits in memory.
+  const sent = await fetch(String(up.upload_url), {
+    method: "POST",
+    headers: { "content-type": "application/octet-stream", "content-length": String(size) },
+    body: streamWithProgress(file.path, (n) => progress(file.name, n, size)),
+    duplex: "half",
+  } as RequestInit);
+  if (!sent.ok) throw new Error(`Slack refused the upload of ${file.name} (${sent.status})`);
+  return String(up.file_id);
+}
+
+/** Shares uploaded files (1 to 10) in the channel as one message, or as a reply in a thread. Each upload can be shared once. */
+export async function shareFiles(token: string, channel: string, files: { id: string; title: string }[], text: string, thread?: string) {
+  if (!files.length || files.length > 10) throw new Error("one Slack message holds 1 to 10 files");
+  await api(token, "files.completeUploadExternal", {
+    files: JSON.stringify(files),
+    channel_id: await channelId(token, channel),
+    ...(text ? { initial_comment: text } : {}),
+    ...(thread ? { thread_ts: thread } : {}),
+  });
+}
+
+/** Posts a message (or a reply in a thread); returns its timestamp, which is how Slack names a thread. */
+export async function postMessage(token: string, channel: string, text: string, thread?: string) {
+  const r = await api(token, "chat.postMessage", { channel: await channelId(token, channel), text, ...(thread ? { thread_ts: thread } : {}) });
+  return String(r.ts);
+}
+
 /** Uploads files (at most 10) and shares them in one message in the channel. Returns their ids. */
 export async function shipFiles(
   token: string,
@@ -103,23 +146,13 @@ export async function shipFiles(
   progress: UploadProgress = () => {},
 ) {
   if (!files.length || files.length > 10) throw new Error("one Slack message holds 1 to 10 files");
-  const id = await channelId(token, channel);
+  await channelId(token, channel); // a channel that isn't there fails before anything uploads
   const uploaded: { id: string; title: string }[] = [];
   for (const file of files) {
-    const { size } = await stat(file.path);
-    say(`Uploading ${file.name} (${(size / 1048576).toFixed(1)} MB) to ${channel}…\n`);
-    const up = await api(token, "files.getUploadURLExternal", { filename: file.name, length: String(size) });
-    // Streamed from disk: a 600 MB APK never sits in memory.
-    const sent = await fetch(String(up.upload_url), {
-      method: "POST",
-      headers: { "content-type": "application/octet-stream", "content-length": String(size) },
-      body: streamWithProgress(file.path, (n) => progress(file.name, n, size)),
-      duplex: "half",
-    } as RequestInit);
-    if (!sent.ok) throw new Error(`Slack refused the upload of ${file.name} (${sent.status})`);
-    uploaded.push({ id: String(up.file_id), title: file.name });
+    say(`Uploading ${file.name} to ${channel}…\n`);
+    uploaded.push({ id: await uploadFile(token, file, progress), title: file.name });
   }
-  await api(token, "files.completeUploadExternal", { files: JSON.stringify(uploaded), channel_id: id, initial_comment: text });
+  await shareFiles(token, channel, uploaded, text);
   say(`Posted to ${channel}.\n`);
   return uploaded.map((u) => u.id);
 }
