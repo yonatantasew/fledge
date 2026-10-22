@@ -128,6 +128,9 @@ test("deploy.routes: builds by environment, options and a channel, all checked",
   assert.equal(c.deploy[0].label, "QA: staging");
   assert.deepEqual(c.deploy[0].options, { androidOutput: "apk", iosOutput: undefined, exportMethod: "ad-hoc", splitDebugInfo: true, toggles: ["probe"] });
   const route = (over: object) => ({ ...base, deploy: { routes: [{ id: "qa", builds: [{ platform: "android", environment: "staging", mode: "release" }], to: { slack: "#x" }, ...over }] } });
+  assert.deepEqual([c.deploy[0].post, c.deploy[0].onFailure], ["together", "hold"], "post together, hold on failure, unless set");
+  assert.deepEqual([parseConfig(route({ post: "as-built", onFailure: "post-built" })).deploy[0].post, parseConfig(route({ onFailure: "post-built" })).deploy[0].onFailure], ["as-built", "post-built"]);
+  assert.throws(() => parseConfig(route({ post: "each" })), /\.post/);
   assert.throws(() => parseConfig(route({ builds: [{ platform: "android", environment: "uat", mode: "release" }] })), /unknown environment "uat"/);
   assert.throws(() => parseConfig(route({ to: { slack: "deployments" } })), /to\.slack/);
   assert.throws(() => parseConfig(route({ options: { toggles: ["nope"] } })), /switch ids/);

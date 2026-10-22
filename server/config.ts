@@ -69,6 +69,10 @@ export interface DeployRoute {
     toggles?: string[];
   };
   to: { slack: string };
+  // together: one message once all have built (onFailure: hold, or post what built);
+  // as-built: the notes with the first build, the rest as replies in their thread.
+  post: "together" | "as-built";
+  onFailure: "hold" | "post-built";
 }
 
 /** Extra flags passed through unchanged (e.g. --no-tree-shake-icons). */
@@ -306,6 +310,8 @@ function parseDeploy(raw: unknown, environments: string[], toggleIds: string[]):
       builds,
       options,
       to: { slack: str(to.slack, `${w}.to.slack`, SLACK_CHANNEL) },
+      post: (optStr(o.post, `${w}.post`, /^(together|as-built)$/) ?? "together") as DeployRoute["post"],
+      onFailure: (optStr(o.onFailure, `${w}.onFailure`, /^(hold|post-built)$/) ?? "hold") as DeployRoute["onFailure"],
     };
   });
   if (new Set(routes.map((x) => x.id)).size !== routes.length) fail("deploy.routes", "ids must be unique");
