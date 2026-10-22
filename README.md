@@ -194,6 +194,13 @@ shows the whole log.
   Otherwise the queue is first in, first out.
 - **Stop all** cancels everything queued and stops running builds, including
   Gradle and `xcodebuild`.
+- **Resume** a stopped or failed build (the ↻ button) to run the same command
+  again as the same build: same folder, the log carries on, and the tree shows
+  the new attempt. Gradle, Xcode and `pub get` reuse what was already done, so
+  it finishes much sooner than a fresh build. It's refused if anything it
+  builds from changed since it stopped: the checkout's commit, its
+  uncommitted changes, or its untracked files (ignored files like `build/`
+  don't count). Then queue a new build instead.
 - **Every artifact is kept.** Each finished build is copied to
   `build/fledge/<time>-<platform>-<flavor>-<mode>/` with its symbols,
   `build.log` and `job.json`, so the next build can't overwrite it. The list is
