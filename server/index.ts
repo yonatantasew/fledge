@@ -1230,6 +1230,8 @@ const MIME: Record<string, string> = {
   ".css": "text/css",
   ".svg": "image/svg+xml",
   ".woff2": "font/woff2",
+  ".png": "image/png",
+  ".webmanifest": "application/manifest+json",
 };
 
 async function serveStatic(res: http.ServerResponse, url: URL) {
