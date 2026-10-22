@@ -1,9 +1,12 @@
-// Grouping the builds list: by version, day, branch or environment. Pure, so
+// Grouping the builds list: by version, day, branch, environment or status. Pure, so
 // node:test covers it (build-groups.test.ts).
 
 import type { Job } from "./api";
 
-export type GroupBy = "none" | "version" | "date" | "branch" | "env";
+export type GroupBy = "none" | "version" | "date" | "branch" | "env" | "status";
+
+const STATUS_ORDER = ["running", "queued", "succeeded", "failed", "cancelled"] as const;
+const STATUS_LABEL: Record<(typeof STATUS_ORDER)[number], string> = { running: "Building", queued: "Queued", succeeded: "Built", failed: "Failed", cancelled: "Cancelled" };
 
 export interface BuildGroup {
   key: string;
@@ -45,8 +48,9 @@ export function dayLabel(t: number, now = Date.now()) {
 
 /**
  * Splits builds (already in display order) into groups, keeping that order
- * inside each. Versions and days go newest first; branches and environments
- * by their newest build. Builds with no known version go last.
+ * inside each. Versions and days go newest first; statuses as the work
+ * flows (building, queued, built, failed, cancelled); branches and
+ * environments by their newest build. Builds with no known version go last.
  */
 export function groupBuilds(builds: Job[], by: GroupBy, envLabel: (flavor: string) => string = (f) => f, now = Date.now()): BuildGroup[] {
   if (by === "none") return [{ key: "all", label: "", builds }];
@@ -72,6 +76,7 @@ export function groupBuilds(builds: Job[], by: GroupBy, envLabel: (flavor: strin
     }
     if (by === "date") return [dayKey(j.createdAt), dayLabel(j.createdAt, now)];
     if (by === "branch") return [j.branch, j.branch];
+    if (by === "status") return [j.status, STATUS_LABEL[j.status]];
     return [j.flavor, envLabel(j.flavor)];
   };
   const groups = new Map<string, BuildGroup & { newest: number }>();
@@ -86,6 +91,7 @@ export function groupBuilds(builds: Job[], by: GroupBy, envLabel: (flavor: strin
   list.sort((a, b) => {
     if (by === "version") return !a.key ? 1 : !b.key ? -1 : compareVersionsDesc(a.key, b.key);
     if (by === "date") return b.key.localeCompare(a.key);
+    if (by === "status") return STATUS_ORDER.indexOf(a.key as never) - STATUS_ORDER.indexOf(b.key as never);
     return b.newest - a.newest;
   });
   return list.map(({ newest: _, ...g }) => g);

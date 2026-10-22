@@ -49,3 +49,8 @@ test("a build with no version borrows one from the same commit, unless versions 
   const g = groupBuilds(builds, "version");
   assert.deepEqual(g.map((x) => [x.label, x.builds.map((b) => b.id)]), [["1.2.16+56", ["apk", "ipa"]], ["Version unknown", ["other", "custom"]]]);
 });
+
+test("grouped by status: in the order the work flows", () => {
+  const builds = [job("f", { status: "failed" }), job("r", { status: "running" }), job("s", {}), job("q", { status: "queued" })];
+  assert.deepEqual(groupBuilds(builds, "status").map((g) => g.label), ["Building", "Queued", "Built", "Failed"]);
+});
