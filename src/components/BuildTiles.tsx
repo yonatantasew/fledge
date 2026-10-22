@@ -1,10 +1,12 @@
-import { ArrowRight01Icon, Delete02Icon, PackageIcon, StopIcon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon, ArrowRight01Icon, Delete02Icon, PackageIcon, StopIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, duration, useNow, type Job, type JobStatus } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { groupBuilds, type GroupBy } from "@/build-groups";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useFlavorLabel } from "@/project";
@@ -12,6 +14,17 @@ import { MODE_LABEL, PLATFORM_ICON } from "./BuildForm";
 import { ARM64_ONLY, BuildActions, installText, shortPath, STATUS } from "./build-status";
 
 const ORDER: JobStatus[] = ["running", "queued", "succeeded", "failed", "cancelled"];
+
+const GROUP_LABEL: Record<GroupBy, string> = { none: "No grouping", version: "Version", date: "Day", branch: "Branch", env: "Environment" };
+
+function storedGroup(): GroupBy {
+  try {
+    const v = localStorage.getItem("fledge:group-builds");
+    return v && v in GROUP_LABEL ? (v as GroupBy) : "none";
+  } catch {
+    return "none";
+  }
+}
 
 function ago(t: number, now: number) {
   const m = Math.round((now - t) / 60_000);
@@ -22,6 +35,14 @@ function ago(t: number, now: number) {
 export function BuildTiles({ jobs, onSelect, showProject = false }: { jobs: Job[]; onSelect: (id: string) => void; showProject?: boolean }) {
   const flavorLabel = useFlavorLabel();
   const [filter, setFilter] = useState<JobStatus | null>(null);
+  const [groupBy, setGroupBy] = useState<GroupBy>(storedGroup);
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    try {
+      localStorage.setItem("fledge:group-builds", groupBy);
+    } catch {}
+    setCollapsed(new Set());
+  }, [groupBy]);
   const now = useNow(jobs.some((j) => j.status === "running"));
   const count = (s: JobStatus) => jobs.filter((j) => j.status === s).length;
   const pending = count("running") + count("queued");
@@ -61,100 +82,163 @@ export function BuildTiles({ jobs, onSelect, showProject = false }: { jobs: Job[
       </CardHeader>
 
       {jobs.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 px-6" role="group" aria-label="Filter by status">
-          <FilterChip active={!filter} onClick={() => setFilter(null)} label="All" count={jobs.length} />
-          {ORDER.filter((s) => count(s) > 0).map((s) => (
-            <FilterChip key={s} active={filter === s} onClick={() => setFilter(filter === s ? null : s)} label={STATUS[s].label} count={count(s)} status={s} />
-          ))}
+        <div className="flex flex-wrap items-center gap-1.5 px-6">
+          <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filter by status">
+            <FilterChip active={!filter} onClick={() => setFilter(null)} label="All" count={jobs.length} />
+            {ORDER.filter((s) => count(s) > 0).map((s) => (
+              <FilterChip key={s} active={filter === s} onClick={() => setFilter(filter === s ? null : s)} label={STATUS[s].label} count={count(s)} status={s} />
+            ))}
+          </div>
+          <Select value={groupBy} onValueChange={(v) => setGroupBy(v as GroupBy)}>
+            <SelectTrigger size="sm" className="ml-auto h-7 gap-1 text-xs" aria-label="Group builds by">
+              <span className="text-muted-foreground">Group:</span>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              {(Object.keys(GROUP_LABEL) as GroupBy[]).map((g) => (
+                <SelectItem key={g} value={g} className="text-xs">
+                  {GROUP_LABEL[g]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       )}
 
-      <CardContent className="min-h-0 overflow-y-auto px-3 pb-1">
-        <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,290px),1fr))] gap-3 p-0.5">
-          {shown.map((j) => {
-            const s = STATUS[j.status];
-            const end = j.endedAt ?? (j.status === "running" ? now : undefined);
-            const installed = installText(j);
-            const waiting =
-              j.status === "queued" ? (busyLanes.has(j.platform) ? `waiting for the ${j.platform === "ios" ? "iOS" : "Android"} build ahead` : "starting…") : null;
-            return (
-              <li key={j.id}>
-                <div
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => onSelect(j.id)}
-                  onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onSelect(j.id))}
-                  className={cn(
-                    "group flex h-full cursor-pointer flex-col rounded-lg border border-l-4 bg-card text-left shadow-xs outline-none transition-shadow hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring",
-                    s.edge,
-                  )}
-                >
-                  <div className="flex items-start gap-2 px-3 pt-2.5">
-                    <HugeiconsIcon icon={PLATFORM_ICON[j.platform]} className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-sm">
-                        <span className="font-semibold">{flavorLabel(j.flavor)}</span>
-                        <span className="text-muted-foreground">{MODE_LABEL[j.mode]}</span>
-                        <Badge variant="outline" className="font-mono text-[10px]">
-                          {j.artifact}
-                        </Badge>
-                        {ARM64_ONLY(j) && (
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Badge variant="outline" className="border-warning/50 font-mono text-[10px] text-warning">
-                                arm64 only
-                              </Badge>
-                            </TooltipTrigger>
-                            <TooltipContent className="max-w-64">Built for 64-bit ARM phones only. Not for testers or upload.</TooltipContent>
-                          </Tooltip>
+      <CardContent className="min-h-0 space-y-4 overflow-y-auto px-3 pb-1">
+        {groupBuilds(shown, groupBy, flavorLabel).map((g) => (
+          <section key={g.key} aria-label={g.label || undefined}>
+            {groupBy !== "none" && (
+              <GroupHeader
+                label={g.label}
+                code={groupBy === "version" || groupBy === "branch"}
+                builds={g.builds}
+                open={!collapsed.has(g.key)}
+                onToggle={() =>
+                  setCollapsed((c) => {
+                    const next = new Set(c);
+                    if (!next.delete(g.key)) next.add(g.key);
+                    return next;
+                  })
+                }
+              />
+            )}
+            {!collapsed.has(g.key) && (
+              <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,290px),1fr))] gap-3 p-0.5">
+                {g.builds.map((j) => {
+                  const s = STATUS[j.status];
+                  const end = j.endedAt ?? (j.status === "running" ? now : undefined);
+                  const installed = installText(j);
+                  const waiting =
+                    j.status === "queued" ? (busyLanes.has(j.platform) ? `waiting for the ${j.platform === "ios" ? "iOS" : "Android"} build ahead` : "starting…") : null;
+                  return (
+                    <li key={j.id}>
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => onSelect(j.id)}
+                        onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onSelect(j.id))}
+                        className={cn(
+                          "group flex h-full cursor-pointer flex-col rounded-lg border border-l-4 bg-card text-left shadow-xs outline-none transition-shadow hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring",
+                          s.edge,
                         )}
+                      >
+                        <div className="flex items-start gap-2 px-3 pt-2.5">
+                          <HugeiconsIcon icon={PLATFORM_ICON[j.platform]} className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-sm">
+                              <span className="font-semibold">{flavorLabel(j.flavor)}</span>
+                              <span className="text-muted-foreground">{MODE_LABEL[j.mode]}</span>
+                              <Badge variant="outline" className="font-mono text-[10px]">
+                                {j.artifact}
+                              </Badge>
+                              {ARM64_ONLY(j) && (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Badge variant="outline" className="border-warning/50 font-mono text-[10px] text-warning">
+                                      arm64 only
+                                    </Badge>
+                                  </TooltipTrigger>
+                                  <TooltipContent className="max-w-64">Built for 64-bit ARM phones only. Not for testers or upload.</TooltipContent>
+                                </Tooltip>
+                              )}
+                            </div>
+                            {showProject && j.projectName && <div className="truncate text-xs text-muted-foreground">{j.projectName}</div>}
+                          </div>
+                          <span className="shrink-0 pt-0.5 text-xs tabular-nums text-muted-foreground">{j.startedAt && end ? duration(end - j.startedAt) : ""}</span>
+                        </div>
+
+                        <dl className="grid flex-1 grid-cols-[4.5rem_minmax(0,1fr)] gap-x-2 gap-y-1 px-3 py-2.5 text-xs">
+                          <dt className="text-muted-foreground">Status</dt>
+                          <dd className="flex min-w-0 items-center gap-1.5">
+                            <HugeiconsIcon icon={s.icon} className={cn("size-3.5 shrink-0", s.className)} />
+                            <span className="truncate" title={j.error}>
+                              {s.label}
+                              {(j.attempt ?? 1) > 1 && <span className="text-muted-foreground"> · attempt {j.attempt}</span>}
+                              {waiting && <span className="text-muted-foreground"> · {waiting}</span>}
+                              {j.status === "failed" && j.error && <span className="text-muted-foreground"> · {j.error}</span>}
+                            </span>
+                          </dd>
+                          <dt className="text-muted-foreground">Device</dt>
+                          <dd className={cn("truncate", installed?.className ?? "text-muted-foreground")}>{installed?.text ?? "not installed"}</dd>
+                          <dt className="text-muted-foreground">Source</dt>
+                          <dd className="truncate font-mono text-[11px]">
+                            {j.branch} @ {j.sha.slice(0, 8)}
+                          </dd>
+                          <dt className="text-muted-foreground">Checkout</dt>
+                          <dd className="truncate font-mono text-[11px]">{shortPath(j.checkout)}</dd>
+                          <dt className="text-muted-foreground">Version</dt>
+                          <dd className="truncate font-mono text-[11px]" title={j.verified?.bundleId}>
+                            {j.verified?.version ?? "—"}
+                          </dd>
+                          <dt className="text-muted-foreground">Created</dt>
+                          <dd className="truncate">{ago(j.createdAt, Date.now())}</dd>
+                        </dl>
+
+                        <div className="flex items-center gap-1 border-t px-1.5 py-1">
+                          <BuildActions job={j} />
+                          <span className="ml-auto flex items-center gap-0.5 pr-1.5 text-xs text-muted-foreground group-hover:text-foreground">
+                            Details
+                            <HugeiconsIcon icon={ArrowRight01Icon} className="size-3.5" />
+                          </span>
+                        </div>
                       </div>
-                      {showProject && j.projectName && <div className="truncate text-xs text-muted-foreground">{j.projectName}</div>}
-                    </div>
-                    <span className="shrink-0 pt-0.5 text-xs tabular-nums text-muted-foreground">{j.startedAt && end ? duration(end - j.startedAt) : ""}</span>
-                  </div>
-
-                  <dl className="grid flex-1 grid-cols-[4.5rem_minmax(0,1fr)] gap-x-2 gap-y-1 px-3 py-2.5 text-xs">
-                    <dt className="text-muted-foreground">Status</dt>
-                    <dd className="flex min-w-0 items-center gap-1.5">
-                      <HugeiconsIcon icon={s.icon} className={cn("size-3.5 shrink-0", s.className)} />
-                      <span className="truncate" title={j.error}>
-                        {s.label}
-                        {(j.attempt ?? 1) > 1 && <span className="text-muted-foreground"> · attempt {j.attempt}</span>}
-                        {waiting && <span className="text-muted-foreground"> · {waiting}</span>}
-                        {j.status === "failed" && j.error && <span className="text-muted-foreground"> · {j.error}</span>}
-                      </span>
-                    </dd>
-                    <dt className="text-muted-foreground">Device</dt>
-                    <dd className={cn("truncate", installed?.className ?? "text-muted-foreground")}>{installed?.text ?? "not installed"}</dd>
-                    <dt className="text-muted-foreground">Source</dt>
-                    <dd className="truncate font-mono text-[11px]">
-                      {j.branch} @ {j.sha.slice(0, 8)}
-                    </dd>
-                    <dt className="text-muted-foreground">Checkout</dt>
-                    <dd className="truncate font-mono text-[11px]">{shortPath(j.checkout)}</dd>
-                    <dt className="text-muted-foreground">Version</dt>
-                    <dd className="truncate font-mono text-[11px]" title={j.verified?.bundleId}>
-                      {j.verified?.version ?? "—"}
-                    </dd>
-                    <dt className="text-muted-foreground">Created</dt>
-                    <dd className="truncate">{ago(j.createdAt, Date.now())}</dd>
-                  </dl>
-
-                  <div className="flex items-center gap-1 border-t px-1.5 py-1">
-                    <BuildActions job={j} />
-                    <span className="ml-auto flex items-center gap-0.5 pr-1.5 text-xs text-muted-foreground group-hover:text-foreground">
-                      Details
-                      <HugeiconsIcon icon={ArrowRight01Icon} className="size-3.5" />
-                    </span>
-                  </div>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
+        ))}
       </CardContent>
     </Card>
+  );
+}
+
+/** A group's title, its size and statuses at a glance; clicking it folds the group. */
+function GroupHeader({ label, code, builds, open, onToggle }: { label: string; code: boolean; builds: Job[]; open: boolean; onToggle: () => void }) {
+  const counts = ORDER.map((s) => [s, builds.filter((b) => b.status === s).length] as const).filter(([, n]) => n > 0);
+  return (
+    <button
+      type="button"
+      aria-expanded={open}
+      onClick={onToggle}
+      className="mb-2 flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-sm hover:bg-muted"
+    >
+      <HugeiconsIcon icon={open ? ArrowDown01Icon : ArrowRight01Icon} className="size-3.5 text-muted-foreground" />
+      <span className={cn("font-semibold", code && "font-mono")}>{label}</span>
+      <span className="text-xs text-muted-foreground">
+        {builds.length} build{builds.length === 1 ? "" : "s"}
+      </span>
+      <span className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
+        {counts.map(([s, n]) => (
+          <span key={s} className="flex items-center gap-0.5" title={STATUS[s].label}>
+            <HugeiconsIcon icon={STATUS[s].icon} className={cn("size-3.5", STATUS[s].className, "animate-none")} />
+            {n}
+          </span>
+        ))}
+      </span>
+    </button>
   );
 }
 

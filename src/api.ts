@@ -54,6 +54,7 @@ export interface Job {
   install?: { state: "installing" | "installed" | "failed" | "needs-replace"; device: string; message?: string; at: number };
   steps?: BuildStep[]; // missing on builds recorded before steps were
   attempt?: number; // 2 and up once resumed
+  version?: string; // the version it was queued to build (verified.version is what came out)
 }
 
 /** A stage of a build; logStart/logEnd mark its output in the build's log. */
