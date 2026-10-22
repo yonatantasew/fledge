@@ -30,7 +30,7 @@ import { structuredAnswer } from "./ai/structured.ts";
 import type { ToolContext } from "./ai/tools.ts";
 import { startable } from "./scheduler.ts";
 import { fill, flavorOf, parseConfig, SLACK_CHANNEL, type FledgeConfig } from "./config.ts";
-import { setSlackToken, shipFile, shipFiles, slackToken, whoAmI } from "./slack.ts";
+import { postMessage, setSlackToken, shareFiles, shipFile, slackToken, uploadFile, whoAmI } from "./slack.ts";
 import { detectProject } from "./detect.ts";
 import {
   addProject,
@@ -932,6 +932,12 @@ const savedDeployments: Deployment[] = await readFile(DEPLOYMENTS, "utf8").then(
 // A restart mid-post can't know whether Slack got it.
 for (const d of savedDeployments) if (d.status === "posting") ((d.status = "failed"), (d.error = "fledge restarted while posting; check the channel, then post again"));
 
+async function needSlack() {
+  const token = await slackToken();
+  if (!token) throw new Error("Slack isn't connected on this Mac: connect it from a build's Slack button");
+  return token;
+}
+
 const deployments = new Deployer(
   {
     build(id) {
@@ -940,15 +946,14 @@ const deployments = new Deployer(
       const file = j.status === "succeeded" && j.artifactFile && existsSync(j.artifactFile) ? j.artifactFile : null;
       return {
         status: j.status,
+        error: j.error,
         name: `${j.flavor} ${j.mode} ${j.platform === "ios" ? "iOS" : "Android"} ${j.artifact}`,
         file: file ? { path: file, name: path.basename(file), size: statSync(file).size } : undefined,
       };
     },
-    async post(channel, files, text, progress) {
-      const token = await slackToken();
-      if (!token) throw new Error("Slack isn't connected on this Mac: connect it from a build's Slack button");
-      await shipFiles(token, channel, files, text, () => {}, progress);
-    },
+    upload: async (file, progress) => uploadFile(await needSlack(), file, (_name, sent, total) => progress(sent, total)),
+    share: async (channel, files, text, thread) => shareFiles(await needSlack(), channel, files, text, thread),
+    message: async (channel, text, thread) => postMessage(await needSlack(), channel, text, thread),
     cancelBuild(id) {
       const j = jobs.find((x) => x.id === id);
       if (j) cancel(j);
@@ -975,9 +980,13 @@ async function deployRequest(b: Record<string, unknown>) {
   let options: unknown;
   const route = typeof b.route === "string" ? project.config.deploy.find((r) => r.id === b.route) : undefined;
   if (b.route !== undefined && !route) return { error: `this app has no deploy route "${String(b.route)}"` };
+  let mode: "together" | "as-built" = "together";
+  let onFailure: "hold" | "post-built" = "hold";
   if (route) {
     label = route.label;
     channel = route.to.slack;
+    mode = route.post;
+    onFailure = route.onFailure;
     targets = route.builds.map((x) => ({ platform: x.platform, flavor: x.environment, mode: x.mode }));
     const o = route.options;
     options = { androidArtifact: o.androidOutput, iosArtifact: o.iosOutput, exportMethod: o.exportMethod, splitDebugInfo: o.splitDebugInfo, obfuscate: o.obfuscate, arm64Only: o.arm64Only, toggles: o.toggles };
@@ -993,7 +1002,10 @@ async function deployRequest(b: Record<string, unknown>) {
   if (p.builds.length > 10) return { error: "one Slack message holds 10 files; deploy at most 10 builds" };
   const head = (await run("git", ["-C", p.checkout.path, "rev-parse", "HEAD"])).stdout.trim();
   const key = deployKey(route?.id ?? null, channel, p.builds.map((x) => x.flavor));
-  return { project, route: route?.id ?? null, label, channel, plan: p, head, key };
+  // How it posts: the route's choice, unless this deploy picks another.
+  if (b.post === "together" || b.post === "as-built") mode = b.post;
+  if (b.onFailure === "hold" || b.onFailure === "post-built") onFailure = b.onFailure;
+  return { project, route: route?.id ?? null, label, channel, plan: p, head, key, mode, onFailure };
 }
 
 /** Queues a deploy's builds and starts waiting for them. */
@@ -1004,7 +1016,7 @@ function startDeploy(r: Exclude<Awaited<ReturnType<typeof deployRequest>>, { err
   deployments.add({
     id, project: r.project.id, route: r.route, key: r.key, label: r.label, channel: r.channel,
     checkout: r.plan.checkout.path, branch: r.plan.checkout.branch, sha: r.head,
-    builds: queued.map((j) => j.id), notes, status: "building", createdAt: Date.now(),
+    builds: queued.map((j) => j.id), notes, mode: r.mode, onFailure: r.onFailure, status: "building", createdAt: Date.now(),
   });
   publishJobs();
   return { id, builds: queued.map((j) => j.id) };
@@ -1287,6 +1299,8 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
       skipped: r.plan.skipped,
       since: n.since,
       notes: n.notes,
+      post: r.mode,
+      onFailure: r.onFailure,
     });
   }
   if (url.pathname === "/api/deploy" && req.method === "POST") {
