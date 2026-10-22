@@ -29,6 +29,7 @@ import { structuredAnswer } from "./ai/structured.ts";
 import type { ToolContext } from "./ai/tools.ts";
 import { startable } from "./scheduler.ts";
 import { fill, flavorOf, parseConfig, type FledgeConfig } from "./config.ts";
+import { setSlackToken, shipFile, slackToken, whoAmI } from "./slack.ts";
 import { detectProject } from "./detect.ts";
 import {
   addProject,
@@ -819,6 +820,59 @@ function resume(job: Job) {
   pump();
 }
 
+/** What shipping a build would post, or why it can't be shipped. */
+async function shipPlan(job: Job, note = ""): Promise<{ channel: string; text: string; file: { path: string; name: string }; size: number } | { error: string; needs?: "channel" | "token" }> {
+  if (job.status !== "succeeded" || !job.artifactFile || !existsSync(job.artifactFile)) return { error: "only a finished build with its file can be shipped" };
+  if (!["apk", "appbundle", "ipa"].includes(job.artifact)) return { error: `a ${job.artifact === "app" ? ".app (a folder)" : job.artifact} build can't be shipped; build an APK, App Bundle or IPA` };
+  const config = (await getProject(job.project))?.config;
+  const slack = config?.ship?.slack;
+  if (!slack) return { error: "this app has no Slack channel: set ship.slack.channel in its config", needs: "channel" };
+  if (!(await slackToken())) return { error: "Slack isn't connected on this Mac: paste the bot token", needs: "token" };
+  const size = (await stat(job.artifactFile)).size;
+  const name = path.basename(job.artifactFile);
+  const values: Record<string, string> = {
+    app: job.projectName,
+    env: (config && flavorOf(config, job.flavor)?.label) ?? job.flavor,
+    mode: job.mode,
+    platform: job.platform === "ios" ? "iOS" : "Android",
+    output: job.artifact,
+    version: job.verified?.version ?? "?",
+    bundleId: job.verified?.bundleId ?? "",
+    branch: job.branch,
+    sha: job.sha.slice(0, 8),
+    file: name,
+    size: `${(size / 1048576).toFixed(1)} MB`,
+    note: note.trim(),
+  };
+  // A line that only held an empty placeholder (like {note}) goes.
+  const text = slack.message
+    .map((line) => ({ line, filled: fill(line, values) }))
+    .filter(({ line, filled }) => filled.trim() || !/\{\w+\}/.test(line))
+    .map(({ filled }) => filled)
+    .join("\n");
+  return { channel: slack.channel, text, file: { path: job.artifactFile, name }, size };
+}
+
+/** Uploads a build to Slack, as a step of the build. */
+async function runShip(job: Job, plan: { channel: string; text: string; file: { path: string; name: string } }) {
+  const stepId = `ship-${(job.steps ?? []).filter((st) => st.id.startsWith("ship-")).length + 1}`;
+  beginStep(job, stepId, `Slack ${plan.channel}`);
+  await log(job, `\n— Ship to Slack ${plan.channel} —\n`);
+  try {
+    const token = await slackToken();
+    if (!token) throw new Error("Slack isn't connected on this Mac");
+    await shipFile(token, plan.channel, plan.file, plan.text, (line) => void log(job, line));
+    endStep(job, stepId, "succeeded", plan.channel);
+  } catch (e) {
+    const message = (e as Error).message.split("\n")[0];
+    await log(job, `Ship failed: ${message}\n`);
+    endStep(job, stepId, "failed", message);
+    throw e;
+  } finally {
+    if (job.archiveDir) await writeFile(path.join(job.archiveDir, "job.json"), JSON.stringify(job, null, 2)).catch(() => {});
+  }
+}
+
 // --------------------------------------------------------------------- http
 
 function send(res: http.ServerResponse, status: number, body: unknown) {
@@ -1040,6 +1094,23 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
     return send(res, 404, { error: "not found" });
   }
 
+  // Slack: whether this Mac has a bot token, and setting or removing it. The token never comes back.
+  if (url.pathname === "/api/slack") {
+    if (req.method === "GET") {
+      const token = await slackToken();
+      if (!token) return send(res, 200, { connected: false });
+      return whoAmI(token).then((w) => send(res, 200, { connected: true, ...w }), (e: Error) => send(res, 200, { connected: false, error: e.message }));
+    }
+    if (req.method === "POST") {
+      const b = (await readJson(req)) as { token?: unknown };
+      return setSlackToken(typeof b.token === "string" ? b.token.trim() : "").then(
+        (w) => send(res, 200, { connected: true, ...w }),
+        (e: Error) => send(res, 400, { error: e.message }),
+      );
+    }
+    if (req.method === "DELETE") return setSlackToken(null).then(() => send(res, 200, { connected: false }));
+  }
+
   if (req.method === "POST" && url.pathname === "/api/plan") return send(res, 200, await plan(await readJson(req)));
 
   if (req.method === "POST" && url.pathname === "/api/jobs") {
@@ -1112,6 +1183,23 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
       if (!target || !existsSync(target)) return send(res, 404, { error: "no such file in this build's folder" });
       spawn("open", ["-R", target], { stdio: "ignore" }).unref();
       return send(res, 200, { ok: true });
+    }
+  }
+
+  if (job && parts[3] === "ship") {
+    if (req.method === "GET") {
+      const plan = await shipPlan(job, (url.searchParams.get("note") ?? "").slice(0, 2000));
+      // The page needs what will be posted, not where the file lives.
+      return send(res, 200, "error" in plan ? plan : { channel: plan.channel, text: plan.text, file: plan.file.name, size: plan.size });
+    }
+    if (req.method === "POST") {
+      const b = (await readJson(req)) as { note?: unknown };
+      const plan = await shipPlan(job, typeof b.note === "string" ? b.note.slice(0, 2000) : "");
+      if ("error" in plan) return send(res, 400, plan);
+      if (job.steps?.some((st) => st.id.startsWith("ship-") && st.state === "running")) return send(res, 409, { error: "already shipping this build" });
+      send(res, 202, { ok: true });
+      await runShip(job, plan).catch(() => {}); // the step and the log carry the failure
+      return;
     }
   }
 

@@ -42,6 +42,15 @@ export interface ReleaseConfig {
   team: Record<string, string>; // GitHub login → name used in notes
 }
 
+/** Where finished builds are shipped. The Slack bot token is per Mac, in the keychain, not here. */
+export interface ShipConfig {
+  // channel: "#deployments" or a channel id; message: lines with {placeholders} (see SHIP_PLACEHOLDERS).
+  slack?: { channel: string; message: string[] };
+}
+
+export const SHIP_PLACEHOLDERS = ["app", "env", "mode", "platform", "output", "version", "bundleId", "branch", "sha", "file", "size", "note"] as const;
+export const DEFAULT_SHIP_MESSAGE = ["*{app}* {env} {mode} · {platform} {output} · {version}", "{branch} @ {sha} · {file} ({size})", "{note}"];
+
 /** Extra flags passed through unchanged (e.g. --no-tree-shake-icons). */
 export interface ExtraArgs {
   all: string[];
@@ -65,6 +74,7 @@ export interface FledgeConfig {
   // fields above, which is also what "Write out commands" puts here.
   commands: CommandTemplates | null;
   release: ReleaseConfig | null;
+  ship: ShipConfig | null;
 }
 
 const NAME = /^[a-z][a-z0-9_]*$/;
@@ -228,7 +238,24 @@ export function parseConfig(raw: unknown): FledgeConfig {
     toggles,
     commands: r.commands === undefined || r.commands === null ? null : parseCommands(r.commands, flavors),
     release: r.release === undefined ? null : parseRelease(r.release),
+    ship: r.ship === undefined || r.ship === null ? null : parseShip(r.ship),
   };
+}
+
+function parseShip(raw: unknown): ShipConfig {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) fail("ship", "must be an object");
+  const r = raw as Record<string, unknown>;
+  if (r.slack === undefined) return {};
+  const sl = (r.slack ?? {}) as Record<string, unknown>;
+  const channel = str(sl.channel, "ship.slack.channel", /^(#[a-z0-9][a-z0-9._-]{0,79}|[CG][A-Z0-9]{6,})$/);
+  const message = sl.message === undefined ? DEFAULT_SHIP_MESSAGE : sl.message;
+  if (!Array.isArray(message) || message.some((l) => typeof l !== "string")) fail("ship.slack.message", "must be an array of lines");
+  for (const line of message as string[]) {
+    for (const [, k] of line.matchAll(/\{(\w+)\}/g)) {
+      if (!(SHIP_PLACEHOLDERS as readonly string[]).includes(k)) fail("ship.slack.message", `unknown placeholder {${k}} (use ${SHIP_PLACEHOLDERS.map((p) => `{${p}}`).join(" ")})`);
+    }
+  }
+  return { slack: { channel, message: message as string[] } };
 }
 
 function varMap(v: unknown, where: string): Record<string, string> {

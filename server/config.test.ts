@@ -93,3 +93,14 @@ test("command, environments without flavors, define files and extra flags", () =
   assert.equal(c.flavors[1].xcodeScheme, "Production");
   assert.deepEqual(parseConfig({ flavors: [{ name: "a" }], flutter: ["puro", "-e", "stable", "flutter"] }).flutter, ["puro", "-e", "stable", "flutter"]);
 });
+
+test("ship.slack takes a channel and checks the message's placeholders", () => {
+  const base = { flavors: [{ name: "staging" }] };
+  assert.equal(parseConfig(base).ship, null);
+  const c = parseConfig({ ...base, ship: { slack: { channel: "#deployments" } } });
+  assert.equal(c.ship?.slack?.channel, "#deployments");
+  assert.ok(c.ship?.slack?.message.some((l) => l.includes("{version}")), "a default message");
+  assert.equal(parseConfig({ ...base, ship: { slack: { channel: "C0123ABCD", message: ["{app} {version}"] } } }).ship?.slack?.channel, "C0123ABCD");
+  assert.throws(() => parseConfig({ ...base, ship: { slack: { channel: "deployments" } } }), /ship\.slack\.channel/);
+  assert.throws(() => parseConfig({ ...base, ship: { slack: { channel: "#d", message: ["{nope}"] } } }), /unknown placeholder \{nope\}/);
+});
