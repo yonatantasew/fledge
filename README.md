@@ -46,6 +46,7 @@ cached, so a new release shows up on the next reload.
 **Optional:**
 - **Installing on devices:** Xcode (`xcrun devicectl`) and the Android SDK (`adb`).
 - **Releases:** `gh`, plus `acli` for Jira and an assistant model for drafting notes.
+- **Shipping:** a Slack app's bot token (see [Shipping to Slack](#shipping-to-slack)).
 - **The Firebase sign-in badge:** `firebase`.
 - **The assistant:** a model: the `claude` CLI login, an API key, or a local
   model through Ollama or LM Studio.
@@ -261,6 +262,65 @@ this Mac. **Open the app after installing** is off by default.
   install through TestFlight. Debug builds are installed but not launched,
   because they need a debugger.
 - App Bundles (`.aab`) can't be installed directly.
+
+## Shipping to Slack
+
+**Ship** (the Slack button on a finished APK, App Bundle or IPA) uploads the
+file to the app's Slack channel with a message about the build. The dialog
+shows the channel, the file and the exact message first, and takes an
+optional note for testers. The upload shows up in the build's tree as a
+branch from the artifact, with its own log. The assistant can ship too
+(`ship_build`), after you approve its card.
+
+**Once per team**, someone makes a Slack app for fledge. It's one of the free
+plan's 10 apps, and everyone on the team uses the same one:
+
+1. At [api.slack.com/apps](https://api.slack.com/apps), **Create New App →
+   From a manifest**, pick the workspace and paste:
+
+   ```yaml
+   display_information:
+     name: fledge
+     description: Ships Flutter builds from fledge
+   features:
+     bot_user:
+       display_name: fledge
+   oauth_config:
+     scopes:
+       bot:
+         - files:write      # upload builds
+         - chat:write       # the message with them
+         - channels:read    # find #channel by name
+         - groups:read      # …private ones too, once the bot is invited
+   ```
+
+2. **Install to Workspace**, then copy the **Bot User OAuth Token**
+   (`xoxb-…`) from *OAuth & Permissions*.
+3. In the channel, `/invite @fledge`.
+
+**On each Mac**, the first Ship asks for that token. fledge checks it with
+Slack and keeps it in the keychain (service `fledge-slack`); it never comes
+back to the page. **Disconnect Slack** in the dialog removes it.
+
+**In the app's config**, the channel and, if you like, the message:
+
+```json
+"ship": {
+  "slack": {
+    "channel": "#deployments",
+    "message": ["*{app}* {env} {mode} · {platform} {output} · {version}", "{branch} @ {sha} · {file} ({size})", "{note}"]
+  }
+}
+```
+
+The message is Slack formatting, one line per entry. Placeholders: `{app}`
+`{env}` `{mode}` `{platform}` `{output}` `{version}` `{bundleId}` `{branch}`
+`{sha}` `{file}` `{size}` `{note}`; a line left empty (like `{note}` without a
+note) is dropped. A channel can also be given by id (`C0123ABCD`).
+
+On Slack's free plan, files count toward the workspace's 5 GB, only the last
+90 days are visible, and files older than a year are deleted, so older builds
+drop out of the channel over time. The artifacts stay in `build/fledge/`.
 
 ## Releases
 
