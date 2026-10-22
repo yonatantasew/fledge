@@ -530,6 +530,8 @@ export const SHIPPABLE = (j: Job) => j.status === "succeeded" && ["apk", "appbun
 // ------------------------------------------------------------------ deploys
 
 export type DeployStatus = "building" | "posting" | "posted" | "held" | "cancelled" | "failed";
+export type PostMode = "together" | "as-built";
+export type OnFailure = "hold" | "post-built";
 
 export interface Deployment {
   id: string;
@@ -541,6 +543,9 @@ export interface Deployment {
   sha: string;
   builds: string[];
   notes: string;
+  mode?: PostMode;
+  onFailure?: OnFailure;
+  staged?: Record<string, { id: string; name: string; at: number }>;
   status: DeployStatus;
   error?: string;
   progress?: string;
@@ -561,11 +566,14 @@ export interface DeployPreview {
   skipped: SkippedBuild[];
   since: string | null;
   notes: string;
+  post: PostMode;
+  onFailure: OnFailure;
 }
 
 export const deployApi = {
   preview: (what: DeployWhat) => post<DeployPreview>("/api/deploy/preview", what),
-  start: (what: DeployWhat, notes: string) => post<{ id: string; builds: string[] }>("/api/deploy", { ...what, notes }),
+  start: (what: DeployWhat, notes: string, how: { post: PostMode; onFailure: OnFailure }) =>
+    post<{ id: string; builds: string[] }>("/api/deploy", { ...what, notes, ...how }),
   list: (project: string) => send<Deployment[]>("GET", `/api/deployments?project=${encodeURIComponent(project)}`),
   postWhatBuilt: (id: string) => post<Deployment>(`/api/deployments/${id}/post`),
   cancel: (id: string) => post<Deployment>(`/api/deployments/${id}/cancel`),

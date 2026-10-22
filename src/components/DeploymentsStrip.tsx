@@ -64,7 +64,9 @@ function DeploymentRow({ d, jobs, onSelect }: { d: Deployment; jobs: Job[]; onSe
           <HugeiconsIcon icon={open ? ArrowDown01Icon : ArrowRight01Icon} className="size-3.5 shrink-0 text-muted-foreground" />
           <HugeiconsIcon icon={RocketIcon} className="size-4 shrink-0 text-muted-foreground" />
           <span className="font-medium">{d.label}</span>
-          <span className="text-xs text-muted-foreground">→ {d.channel}</span>
+          <span className="text-xs text-muted-foreground">
+            → {d.channel} · {d.mode === "as-built" ? "as each finishes" : d.onFailure === "post-built" ? "together, post what built" : "together"}
+          </span>
         </button>
         <span className="flex items-center gap-1 text-xs">
           <HugeiconsIcon icon={st.icon} className={cn("size-3.5", st.className)} />
@@ -80,7 +82,12 @@ function DeploymentRow({ d, jobs, onSelect }: { d: Deployment; jobs: Job[]; onSe
           )}
         </span>
         <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={d.error ?? d.progress}>
-          {d.progress ?? d.error ?? (d.posted ? `${d.posted.files.length} file${d.posted.files.length === 1 ? "" : "s"}${d.posted.missing.length ? `, ${d.posted.missing.length} not built` : ""}` : "")}
+          {d.progress ??
+            d.error ??
+            (d.status === "building" && d.staged && Object.keys(d.staged).length
+              ? `${Object.keys(d.staged).length} of ${d.builds.length} uploaded, waiting for the rest`
+              : null) ??
+            (d.posted ? `${d.posted.files.length} file${d.posted.files.length === 1 ? "" : "s"}${d.posted.missing.length ? `, ${d.posted.missing.length} not built` : ""}` : "")}
         </span>
         <span className="text-xs text-muted-foreground">{ago(d.endedAt ?? d.createdAt)}</span>
         {(d.status === "held" || d.status === "failed") && (

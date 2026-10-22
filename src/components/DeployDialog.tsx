@@ -1,7 +1,7 @@
 import { Alert02Icon, Loading03Icon, RocketIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
-import { deployApi, type DeployPreview, type DeployWhat } from "@/api";
+import { deployApi, type DeployPreview, type DeployWhat, type OnFailure, type PostMode } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -10,7 +10,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useFlavorLabel, useProject } from "@/project";
+import { cn } from "@/lib/utils";
 import { MODE_LABEL, PLATFORM_ICON } from "./BuildForm";
+
+// How a deploy posts: the route's setting, which a deploy can change.
+const HOW: { id: string; post: PostMode; onFailure: OnFailure; label: string; hint: string }[] = [
+  { id: "together", post: "together", onFailure: "hold", label: "Together", hint: "One message once all have built. Files upload as each finishes. Nothing if one fails." },
+  { id: "post-built", post: "together", onFailure: "post-built", label: "Together, post what built", hint: "One message once all are done; a failed build is listed as not built." },
+  { id: "as-built", post: "as-built", onFailure: "hold", label: "As each finishes", hint: "The notes with the first build to finish; each later one replies in their thread." },
+];
 
 /**
  * Start a deployment: its builds, where it posts, and the notes (what changed
@@ -38,6 +46,7 @@ export function DeployDialog({
   const [error, setError] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [how, setHow] = useState("together");
 
   const request = (): DeployWhat | null => (!what ? null : oneOff ? ({ ...what, channel } as DeployWhat) : what);
 
@@ -51,6 +60,7 @@ export function DeployDialog({
       const p = await deployApi.preview(r);
       setPreview(p);
       setNotes(p.notes);
+      setHow(p.post === "as-built" ? "as-built" : p.onFailure === "post-built" ? "post-built" : "together");
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -78,7 +88,8 @@ export function DeployDialog({
     setStarting(true);
     setError(null);
     try {
-      const d = await deployApi.start(r, notes);
+      const chosen = HOW.find((h) => h.id === how)!;
+      const d = await deployApi.start(r, notes, { post: chosen.post, onFailure: chosen.onFailure });
       onStarted(d.id);
       onOpenChange(false);
     } catch (e) {
@@ -96,7 +107,7 @@ export function DeployDialog({
             <HugeiconsIcon icon={RocketIcon} className="size-5" />
             {preview?.label ?? (oneOff ? "Deploy what's selected" : "Deploy")}
           </DialogTitle>
-          <DialogDescription>Builds, then posts the notes with every file in one message once they've all built. Nothing is posted if a build fails.</DialogDescription>
+          <DialogDescription>Builds, then posts the notes and the files to Slack, the way you pick below.</DialogDescription>
         </DialogHeader>
 
         {oneOff && (
@@ -139,6 +150,24 @@ export function DeployDialog({
             <div className="space-y-1.5">
               <Label htmlFor="deploy-notes">Notes (Slack formatting; the files are listed below them when it posts)</Label>
               <Textarea id="deploy-notes" rows={14} value={notes} onChange={(e) => setNotes(e.target.value)} className="font-mono text-xs" />
+            </div>
+            <div className="space-y-1.5" role="radiogroup" aria-label="How to post">
+              <Label>How to post</Label>
+              <div className="grid gap-1.5 sm:grid-cols-3">
+                {HOW.map((h) => (
+                  <button
+                    key={h.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={how === h.id}
+                    onClick={() => setHow(h.id)}
+                    className={cn("rounded-md border p-2 text-left text-xs hover:bg-muted", how === h.id && "border-foreground/40 bg-muted")}
+                  >
+                    <span className="block font-medium">{h.label}</span>
+                    <span className="text-muted-foreground">{h.hint}</span>
+                  </button>
+                ))}
+              </div>
             </div>
             {needsConfirm && (
               <label className="flex items-center gap-2 text-xs text-warning">
