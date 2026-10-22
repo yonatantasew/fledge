@@ -43,6 +43,7 @@ import {
   type Project,
 } from "./projects.ts";
 import { startupProject } from "./repo.ts";
+import { fingerprint } from "./fingerprint.ts";
 import { install, installBlocker, listDevices, NeedsReplace, type Device } from "./devices.ts";
 
 const run = promisify(execFile);
@@ -175,6 +176,9 @@ interface Job {
   error?: string;
   install?: { state: "installing" | "installed" | "failed" | "needs-replace"; device: string; message?: string; at: number };
   steps?: Step[]; // missing on builds recorded before steps were
+  argv?: string[]; // the exact command, kept so a stopped build can be resumed after a restart
+  tree?: string; // fingerprint of the checkout when the build stopped or failed (see fingerprint())
+  attempt?: number; // 2 and up once resumed
 }
 
 /** One stage of a build, with where its output starts and ends in the build's log. */
@@ -315,10 +319,12 @@ async function runJob(job: Job) {
   running.set(job.id, slot);
   job.status = "running";
   job.startedAt = Date.now();
-  job.archiveDir = path.join(job.checkout, ARCHIVE, `${stamp()}-${job.platform}-${job.flavor}-${job.mode}`);
+  // A resumed build keeps its folder, so its log and artifacts stay together.
+  job.archiveDir ??= path.join(job.checkout, ARCHIVE, `${stamp()}-${job.platform}-${job.flavor}-${job.mode}`);
   publishJobs();
   try {
     await mkdir(job.archiveDir, { recursive: true });
+    if (job.attempt) await log(job, `\n— Resumed: attempt ${job.attempt}, the same command on the same files —\n`);
     await log(job, `${job.branch} @ ${job.sha} in ${job.checkout}\n\n`);
 
     beginStep(job, "pub", "pub get");
@@ -362,6 +368,9 @@ async function runJob(job: Job) {
   } finally {
     running.delete(job.id);
     job.endedAt = Date.now();
+    // What the files were when it stopped, including what the build itself
+    // changed (pubspec.lock, Podfile.lock…): resuming needs them unchanged since.
+    if ((job.status as Status) === "cancelled" || job.status === "failed") job.tree = await fingerprint(job.checkout).catch(() => undefined);
     await writeFile(path.join(job.archiveDir, "job.json"), JSON.stringify(job, null, 2)).catch(() => {});
     publishJobs();
     pump();
@@ -718,6 +727,7 @@ function enqueue(p: Exclude<Awaited<ReturnType<typeof plan>>, { error: unknown }
       status: "queued",
       createdAt: Date.now(),
     };
+    job.argv = b.argv;
     argvs.set(job.id, b.argv);
     jobs.push(job);
     added.push(job);
@@ -768,6 +778,32 @@ async function runInstall(job: Job, { device, file }: { device: Device; file: st
   }
   if (job.archiveDir) await writeFile(path.join(job.archiveDir, "job.json"), JSON.stringify(job, null, 2)).catch(() => {});
   publishJobs();
+}
+
+/** Why a build can't be resumed, or null when it can: stopped or failed, and nothing it builds from has changed. */
+async function resumeBlocker(job: Job): Promise<string | null> {
+  if (job.status !== "cancelled" && job.status !== "failed") return "only a stopped or failed build can be resumed";
+  if (!job.argv && !argvs.has(job.id)) return "this build is from before fledge kept build commands; queue it again instead";
+  if (!existsSync(job.checkout)) return "its checkout is gone";
+  const head = (await run("git", ["-C", job.checkout, "rev-parse", "HEAD"]).catch(() => ({ stdout: "" }))).stdout.trim();
+  if (!head.startsWith(job.sha)) return `the checkout moved from ${job.sha.slice(0, 8)} to ${head.slice(0, 8) || "nothing"}; queue a new build`;
+  // A build stopped before it started has no fingerprint; the same commit is all it had.
+  if (job.tree && job.tree !== (await fingerprint(job.checkout).catch(() => ""))) {
+    return "files in the checkout changed since it stopped (uncommitted or untracked changes); queue a new build";
+  }
+  return null;
+}
+
+/** Runs a stopped or failed build again as the same build: same command, same folder, log continued. */
+function resume(job: Job) {
+  argvs.set(job.id, job.argv ?? argvs.get(job.id)!);
+  job.status = "queued";
+  job.attempt = (job.attempt ?? 1) + 1;
+  delete job.error;
+  delete job.exitCode;
+  delete job.endedAt;
+  publishJobs();
+  pump();
 }
 
 // --------------------------------------------------------------------- http
@@ -1036,6 +1072,16 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
     send(res, 202, { ok: true });
     await runInstall(job, ready, { launch: b.launch === true, replace: b.replace === true });
     return;
+  }
+
+  if (job && parts[3] === "resume") {
+    const blocked = await resumeBlocker(job);
+    if (req.method === "GET") return send(res, 200, blocked ? { error: blocked } : { ok: true });
+    if (req.method === "POST") {
+      if (blocked) return send(res, 409, { error: blocked });
+      resume(job);
+      return send(res, 200, { ok: true });
+    }
   }
 
   if (job && req.method === "POST" && parts[3] === "organizer") {
