@@ -142,20 +142,12 @@ async function jiraTickets(keys: string[]): Promise<Record<string, Ticket>> {
  * bump commit, whose parent is the main commit that was built, so the range
  * starts right after the last build.
  */
-export async function gatherFacts(p: Project, baseTag: string | null, prerelease: boolean): Promise<ReleaseFacts> {
-  await git(p, "fetch", "--quiet", "--tags", "origin", rel(p).github.baseBranch);
-  const headRef = `origin/${rel(p).github.baseBranch}`;
-  const headSha = await git(p, "rev-parse", headRef);
-
-  let previous: ReleaseFacts["previous"] = null;
-  if (baseTag) {
-    const sha = await git(p, "rev-parse", `${baseTag}^{commit}`);
-    const date = await git(p, "log", "-1", "--format=%cI", sha);
-    const base = await git(p, "merge-base", sha, headSha);
-    previous = { tag: baseTag, sha, base, version: baseTag.replace(/^v/, ""), date: formatDate(new Date(date)) };
-  }
-
-  const log = await git(p, "log", "--first-parent", "--format=%H%x09%s", previous ? `${previous.sha}..${headSha}` : `-50`, ...(previous ? [] : [headSha]));
+/**
+ * The PRs merged (first-parent) into `head` since `from` (or the last 50
+ * commits), with their tickets, DRIs, sizes, and which ones were stacked.
+ */
+async function mergedPrs(p: Project, range: string | null, head: string): Promise<MergedPr[]> {
+  const log = await git(p, "log", "--first-parent", "--format=%H%x09%s", ...(range ? [range] : ["-50", head]));
   const merges = parseMerges(log);
 
   const prs = await pool(merges, 6, async (m): Promise<MergedPr> => {
@@ -192,6 +184,41 @@ export async function gatherFacts(p: Project, baseTag: string | null, prerelease
       if (!onMain) prs[b].stackedOn.push(prs[a].number);
     }
   }
+  return prs;
+}
+
+/**
+ * What changed in a checkout between two commits, for a deploy's notes: the
+ * merged PRs with live Jira status when the app has a release setup (GitHub,
+ * Jira), else the commit subjects. `base` null: since the last release tag,
+ * or the last 50 commits.
+ */
+export async function changesBetween(p: Project, checkout: string, base: string | null, head: string) {
+  const at = (...a: string[]) => run("git", ["-C", checkout, ...a], { maxBuffer: 32 << 20 }).then((r) => r.stdout.trim());
+  if (p.config?.release) {
+    base ??= await releases(p).then((r) => (r[0] ? at("rev-parse", `${r[0].tag}^{commit}`) : null), () => null);
+    const prs = (await mergedPrs(p, base ? `${base}..${head}` : null, head)).filter((pr) => !pr.versionBump);
+    const keys = [...new Set(prs.flatMap((pr) => pr.tickets))];
+    return { base, prs, tickets: await jiraTickets(keys).catch(() => ({}) as Record<string, Ticket>), commits: [] as string[] };
+  }
+  const commits = (await at("log", "--first-parent", "--format=%s", ...(base ? [`${base}..${head}`] : ["-30", head]))).split("\n").filter(Boolean);
+  return { base, prs: [] as MergedPr[], tickets: {} as Record<string, Ticket>, commits: commits.slice(0, 30) };
+}
+
+export async function gatherFacts(p: Project, baseTag: string | null, prerelease: boolean): Promise<ReleaseFacts> {
+  await git(p, "fetch", "--quiet", "--tags", "origin", rel(p).github.baseBranch);
+  const headRef = `origin/${rel(p).github.baseBranch}`;
+  const headSha = await git(p, "rev-parse", headRef);
+
+  let previous: ReleaseFacts["previous"] = null;
+  if (baseTag) {
+    const sha = await git(p, "rev-parse", `${baseTag}^{commit}`);
+    const date = await git(p, "log", "-1", "--format=%cI", sha);
+    const base = await git(p, "merge-base", sha, headSha);
+    previous = { tag: baseTag, sha, base, version: baseTag.replace(/^v/, ""), date: formatDate(new Date(date)) };
+  }
+
+  const prs = await mergedPrs(p, previous ? `${previous.sha}..${headSha}` : null, headSha);
 
   const keys = [...new Set(prs.flatMap((pr) => pr.tickets))];
   const pubspec = /^version:\s*(\S+)/m.exec(await git(p, "show", `${headSha}:pubspec.yaml`))?.[1] ?? "";

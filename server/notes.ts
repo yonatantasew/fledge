@@ -197,3 +197,48 @@ export function jiraComment(tag: string, url: string, prerelease: boolean, moved
     ? `Included in ${kind} ${tag} (${url}); moved ${moved.from} -> ${moved.to}.`
     : `Included in ${kind} ${tag} (${url}). Status is ${status}, so it was not moved to ${toStatus}; please check it.`;
 }
+
+/** What a deploy is: its route, builds and where its changes start. */
+export interface DeployNoteFacts {
+  app: string;
+  label: string; // the route's label, or "Deploy" for a one-off
+  version: string;
+  builds: { environment: string; mode: string; platform: "android" | "ios"; output: string }[];
+  branch: string;
+  sha: string;
+  since: string | null; // the last deploy's commit, or null for the first
+  prs: MergedPr[];
+  commits: string[]; // subjects, when there are no PRs to show (no release setup)
+}
+
+/**
+ * A deploy's message, Slack formatting: the builds, then what changed since
+ * the route's last deploy, one numbered item per PR like the channel note.
+ * The files are added when it's posted.
+ */
+export function templateDeploy(d: DeployNoteFacts): string {
+  const byKind = new Map<string, string[]>();
+  for (const b of d.builds) {
+    const kind = `${b.environment} ${b.mode}`;
+    byKind.set(kind, [...(byKind.get(kind) ?? []), `${b.platform === "ios" ? "iOS" : "Android"} ${b.output}`]);
+  }
+  const lines = [
+    `*${d.app}* · ${d.label} · ${d.version}`,
+    `${[...byKind].map(([k, outs]) => `${k} (${outs.join(", ")})`).join(" · ")} · ${d.branch} @ ${short(d.sha)}`,
+    "",
+  ];
+  const since = d.since ? `since the last deploy (${short(d.since)})` : "since the last release";
+  if (d.prs.length) {
+    lines.push(`Changes ${since}:`);
+    d.prs.forEach((p, i) => {
+      lines.push(`${i + 1}. ${cleanTitle(p.title, p.tickets)} — ${p.tickets.length ? p.tickets.join(", ") : `PR #${p.number}`}`);
+      lines.push(`   DRI: @${p.dri}`);
+    });
+  } else if (d.commits.length) {
+    lines.push(`Commits ${since}:`);
+    for (const c of d.commits) lines.push(`• ${c}`);
+  } else {
+    lines.push(`No changes ${since}.`);
+  }
+  return lines.join("\n");
+}

@@ -5,6 +5,7 @@ import {
   cleanTitle,
   nextVersion,
   parseMerges,
+  templateDeploy,
   templateGithub,
   templateSlack,
   templateRegex,
@@ -106,4 +107,41 @@ test("templateGithub carries tickets and rollback", () => {
   assert.match(g, /^Release 1\.3\.1\+3 for the Oct 16, 2026 deployment\./);
   assert.match(g, /## Tickets\n1\. Show the plan card — PROJ-4001/);
   assert.match(g, /## Rollback\n- Full rollback: redeploy the previous staging build \(1\.3\.1\+2/);
+});
+
+test("a deploy note: the builds, then each PR since the last deploy with its tickets and DRI", () => {
+  const pr = (number: number, title: string, tickets: string[], dri: string) => ({ number, title, tickets, dri }) as unknown as MergedPr;
+  const text = templateDeploy({
+    app: "demo",
+    label: "QA: staging",
+    version: "1.3.1+4",
+    builds: [
+      { environment: "Staging", mode: "release", platform: "android", output: "apk" },
+      { environment: "Staging", mode: "release", platform: "ios", output: "ipa" },
+    ],
+    branch: "main",
+    sha: "7bb364f2aaaa",
+    since: "1a2b3c4d5555",
+    prs: [pr(931, "PROJ-3438: Cache the feed tabs", ["PROJ-3438"], "Ana"), pr(940, "Fix a typo", [], "Bo")],
+    commits: [],
+  });
+  assert.equal(
+    text,
+    [
+      "*demo* · QA: staging · 1.3.1+4",
+      "Staging release (Android apk, iOS ipa) · main @ 7bb364f2",
+      "",
+      "Changes since the last deploy (1a2b3c4d):",
+      "1. Cache the feed tabs — PROJ-3438",
+      "   DRI: @Ana",
+      "2. Fix a typo — PR #940",
+      "   DRI: @Bo",
+    ].join("\n"),
+  );
+});
+
+test("a deploy note without PRs lists commits, or says nothing changed", () => {
+  const base = { app: "demo", label: "Deploy", version: "1.0.0+1", builds: [{ environment: "Prod", mode: "release", platform: "android" as const, output: "aab" }], branch: "feature/x", sha: "abcdef1234", prs: [] };
+  assert.match(templateDeploy({ ...base, since: null, commits: ["Add login", "Fix crash"] }), /Commits since the last release:\n• Add login\n• Fix crash$/);
+  assert.match(templateDeploy({ ...base, since: "1111111122", commits: [] }), /No changes since the last deploy \(11111111\)\.$/);
 });
