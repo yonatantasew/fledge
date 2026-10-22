@@ -51,6 +51,26 @@ export interface ShipConfig {
 export const SHIP_PLACEHOLDERS = ["app", "env", "mode", "platform", "output", "version", "bundleId", "branch", "sha", "file", "size", "note"] as const;
 export const DEFAULT_SHIP_MESSAGE = ["*{app}* {env} {mode} · {platform} {output} · {version}", "{branch} @ {sha} · {file} ({size})", "{note}"];
 
+/**
+ * Deploy routes: named sets of builds that, once all have built, are posted
+ * together with notes (changes since the route's last deploy) to a channel.
+ */
+export interface DeployRoute {
+  id: string;
+  label: string;
+  builds: { platform: "android" | "ios"; environment: string; mode: "debug" | "profile" | "release" }[];
+  options: {
+    androidOutput?: "apk" | "appbundle";
+    iosOutput?: "ipa" | "app";
+    exportMethod?: "app-store" | "ad-hoc" | "development";
+    splitDebugInfo?: boolean;
+    obfuscate?: boolean;
+    arm64Only?: boolean;
+    toggles?: string[];
+  };
+  to: { slack: string };
+}
+
 /** Extra flags passed through unchanged (e.g. --no-tree-shake-icons). */
 export interface ExtraArgs {
   all: string[];
@@ -75,6 +95,7 @@ export interface FledgeConfig {
   commands: CommandTemplates | null;
   release: ReleaseConfig | null;
   ship: ShipConfig | null;
+  deploy: DeployRoute[];
 }
 
 const NAME = /^[a-z][a-z0-9_]*$/;
@@ -239,7 +260,56 @@ export function parseConfig(raw: unknown): FledgeConfig {
     commands: r.commands === undefined || r.commands === null ? null : parseCommands(r.commands, flavors),
     release: r.release === undefined ? null : parseRelease(r.release),
     ship: r.ship === undefined || r.ship === null ? null : parseShip(r.ship),
+    deploy: r.deploy === undefined ? [] : parseDeploy(r.deploy, flavors.map((f) => f.name), toggles.map((t) => t.id)),
   };
+}
+
+export const SLACK_CHANNEL = /^(#[a-z0-9][a-z0-9._-]{0,79}|[CG][A-Z0-9]{6,})$/;
+
+function parseDeploy(raw: unknown, environments: string[], toggleIds: string[]): DeployRoute[] {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) fail("deploy", "must be an object with routes");
+  if (!Array.isArray(r.routes)) fail("deploy.routes", "must be a list");
+  const routes = (r.routes as unknown[]).map((x, i): DeployRoute => {
+    const w = `deploy.routes[${i}]`;
+    const o = (x ?? {}) as Record<string, unknown>;
+    if (!Array.isArray(o.builds) || o.builds.length === 0) fail(`${w}.builds`, "must list at least one build");
+    if (o.builds.length > 10) fail(`${w}.builds`, "at most 10 (one Slack message holds 10 files)");
+    const builds = (o.builds as unknown[]).map((b, j) => {
+      const bw = `${w}.builds[${j}]`;
+      const bo = (b ?? {}) as Record<string, unknown>;
+      const platform = str(bo.platform, `${bw}.platform`, /^(android|ios)$/) as "android" | "ios";
+      const environment = str(bo.environment, `${bw}.environment`);
+      if (!environments.includes(environment)) fail(`${bw}.environment`, `unknown environment "${environment}" (have ${environments.join(", ")})`);
+      const mode = str(bo.mode, `${bw}.mode`, /^(debug|profile|release)$/) as "debug" | "profile" | "release";
+      return { platform, environment, mode };
+    });
+    const opt = (o.options ?? {}) as Record<string, unknown>;
+    if (typeof opt !== "object" || Array.isArray(opt)) fail(`${w}.options`, "must be an object");
+    const options: DeployRoute["options"] = {
+      androidOutput: optStr(opt.androidOutput, `${w}.options.androidOutput`, /^(apk|appbundle)$/) as DeployRoute["options"]["androidOutput"],
+      iosOutput: optStr(opt.iosOutput, `${w}.options.iosOutput`, /^(ipa|app)$/) as DeployRoute["options"]["iosOutput"],
+      exportMethod: optStr(opt.exportMethod, `${w}.options.exportMethod`, /^(app-store|ad-hoc|development)$/) as DeployRoute["options"]["exportMethod"],
+    };
+    for (const k of ["splitDebugInfo", "obfuscate", "arm64Only"] as const) {
+      if (opt[k] !== undefined && typeof opt[k] !== "boolean") fail(`${w}.options.${k}`, "must be true or false");
+      if (opt[k] !== undefined) options[k] = opt[k] as boolean;
+    }
+    if (opt.toggles !== undefined) {
+      if (!Array.isArray(opt.toggles) || opt.toggles.some((t) => !toggleIds.includes(t as string))) fail(`${w}.options.toggles`, `must be switch ids (have ${toggleIds.join(", ") || "none"})`);
+      options.toggles = opt.toggles as string[];
+    }
+    const to = (o.to ?? {}) as Record<string, unknown>;
+    return {
+      id: str(o.id, `${w}.id`, /^[a-z0-9][a-z0-9-]{0,39}$/),
+      label: optStr(o.label, `${w}.label`) ?? String(o.id),
+      builds,
+      options,
+      to: { slack: str(to.slack, `${w}.to.slack`, SLACK_CHANNEL) },
+    };
+  });
+  if (new Set(routes.map((x) => x.id)).size !== routes.length) fail("deploy.routes", "ids must be unique");
+  return routes;
 }
 
 function parseShip(raw: unknown): ShipConfig {
@@ -247,7 +317,7 @@ function parseShip(raw: unknown): ShipConfig {
   const r = raw as Record<string, unknown>;
   if (r.slack === undefined) return {};
   const sl = (r.slack ?? {}) as Record<string, unknown>;
-  const channel = str(sl.channel, "ship.slack.channel", /^(#[a-z0-9][a-z0-9._-]{0,79}|[CG][A-Z0-9]{6,})$/);
+  const channel = str(sl.channel, "ship.slack.channel", SLACK_CHANNEL);
   const message = sl.message === undefined ? DEFAULT_SHIP_MESSAGE : sl.message;
   if (!Array.isArray(message) || message.some((l) => typeof l !== "string")) fail("ship.slack.message", "must be an array of lines");
   for (const line of message as string[]) {

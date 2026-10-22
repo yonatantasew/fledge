@@ -104,3 +104,33 @@ test("ship.slack takes a channel and checks the message's placeholders", () => {
   assert.throws(() => parseConfig({ ...base, ship: { slack: { channel: "deployments" } } }), /ship\.slack\.channel/);
   assert.throws(() => parseConfig({ ...base, ship: { slack: { channel: "#d", message: ["{nope}"] } } }), /unknown placeholder \{nope\}/);
 });
+
+test("deploy.routes: builds by environment, options and a channel, all checked", () => {
+  const base = { flavors: [{ name: "staging" }, { name: "prod" }], toggles: [{ id: "probe", label: "Probe", define: "PROBE=true" }] };
+  assert.deepEqual(parseConfig(base).deploy, []);
+  const c = parseConfig({
+    ...base,
+    deploy: {
+      routes: [
+        {
+          id: "qa",
+          label: "QA: staging",
+          builds: [
+            { platform: "android", environment: "staging", mode: "release" },
+            { platform: "ios", environment: "staging", mode: "release" },
+          ],
+          options: { androidOutput: "apk", exportMethod: "ad-hoc", splitDebugInfo: true, toggles: ["probe"] },
+          to: { slack: "#fledge-experiment" },
+        },
+      ],
+    },
+  });
+  assert.equal(c.deploy[0].label, "QA: staging");
+  assert.deepEqual(c.deploy[0].options, { androidOutput: "apk", iosOutput: undefined, exportMethod: "ad-hoc", splitDebugInfo: true, toggles: ["probe"] });
+  const route = (over: object) => ({ ...base, deploy: { routes: [{ id: "qa", builds: [{ platform: "android", environment: "staging", mode: "release" }], to: { slack: "#x" }, ...over }] } });
+  assert.throws(() => parseConfig(route({ builds: [{ platform: "android", environment: "uat", mode: "release" }] })), /unknown environment "uat"/);
+  assert.throws(() => parseConfig(route({ to: { slack: "deployments" } })), /to\.slack/);
+  assert.throws(() => parseConfig(route({ options: { toggles: ["nope"] } })), /switch ids/);
+  assert.throws(() => parseConfig(route({ builds: Array(11).fill({ platform: "android", environment: "staging", mode: "release" }) })), /at most 10/);
+  assert.throws(() => parseConfig({ ...base, deploy: { routes: [route({}).deploy.routes[0], route({}).deploy.routes[0]] } }), /unique/);
+});
