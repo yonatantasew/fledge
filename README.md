@@ -335,14 +335,27 @@ build fails or is stopped, nothing is posted.
    since then, each with its tickets and DRI, as in the release channel note.
    Without a release setup, it's the commit subjects. Edit them freely; Prod
    builds ask you to tick a box.
-3. **Build and deploy.** A strip above the builds follows it: building,
-   posting (with upload progress), then posted. Its builds carry its name.
+3. Pick **how to post** (the route's setting by default):
+   - **Together:** one message with the notes and every file once all have
+     built. Each file is uploaded as soon as its build finishes (but not
+     shared), so the post at the end is quick. If a build fails, nothing is
+     posted.
+   - **Together, post what built:** the same, but a failed build doesn't
+     stop it: what built is posted with a "Not built" line.
+   - **As each finishes:** the first build to finish posts the notes with
+     its file right under them; each later build (or failure) is a reply in
+     their thread.
+4. **Build and deploy.** A strip above the builds follows it: building (and
+   how many files are already uploaded), posting with upload progress, then
+   posted. Its builds carry its name.
 
 A deployment whose build failed is **held**. Resume the build (↻) and it
 carries on, **Post what built** sends the rest with a "Not built" line, or
 **Cancel** stops it. If Slack refuses the post, it's marked failed with the
 reason and can be posted again. Files stream from disk, so a 600 MB APK
-never sits in memory, and one message holds at most 10 files.
+never sits in memory, and one message holds at most 10 files. Slack keeps an
+uploaded but unshared file for a while (at least 15 minutes in a test);
+older ones are uploaded again before they're shared.
 
 Routes go in the app's config:
 
@@ -357,7 +370,9 @@ Routes go in the app's config:
         { "platform": "ios", "environment": "staging", "mode": "release" }
       ],
       "options": { "androidOutput": "apk", "iosOutput": "ipa", "exportMethod": "ad-hoc", "splitDebugInfo": true },
-      "to": { "slack": "#qa-builds" }
+      "to": { "slack": "#qa-builds" },
+      "post": "together",
+      "onFailure": "hold"
     }
   ]
 }
@@ -365,7 +380,8 @@ Routes go in the app's config:
 
 `options` takes `androidOutput` (`apk`, `appbundle`), `iosOutput` (`ipa`,
 `app`), `exportMethod`, `splitDebugInfo`, `obfuscate`, `arm64Only` and
-`toggles` (switch ids). Each route counts its own deploys for "since the
+`toggles` (switch ids). `post` is `together` (default) or `as-built`;
+`onFailure` (for `together`) is `hold` (default) or `post-built`. Each route counts its own deploys for "since the
 last deploy"; one-offs count deploys to the same channel and environments.
 The history is `~/.config/fledge/deployments.json`. It needs the Slack app
 from [Shipping to Slack](#shipping-to-slack). The assistant can deploy too
