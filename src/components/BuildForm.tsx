@@ -124,8 +124,11 @@ export function BuildForm({ projectId, checkout }: { projectId: string; checkout
   const flavorLabel = useFlavorLabel();
   const { platforms, modes, options } = form;
   // Saved selections may name flavors (or toggles) this app's fledge.json doesn't have.
-  const flavors = form.flavors.filter((f) => project.flavors.some((p) => p.name === f));
-  const toggleIds = options.toggles.filter((id) => project.toggles.some((t) => t.id === id));
+  // Memoized: a new array each render would make the request below new each
+  // render, which re-plans in a loop and resets the Prod confirmation the moment
+  // it's set.
+  const flavors = useMemo(() => form.flavors.filter((f) => project.flavors.some((p) => p.name === f)), [form.flavors, project.flavors]);
+  const toggleIds = useMemo(() => options.toggles.filter((id) => project.toggles.some((t) => t.id === id)), [options.toggles, project.toggles]);
   useEffect(() => {
     if (project.flavors.length && !form.flavors.some((f) => project.flavors.some((p) => p.name === f))) {
       setForm((f) => ({ ...f, flavors: [project.flavors[0].name] }));
