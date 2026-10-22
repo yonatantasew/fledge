@@ -44,6 +44,7 @@ import {
 } from "./projects.ts";
 import { startupProject } from "./repo.ts";
 import { fingerprint } from "./fingerprint.ts";
+import { inside, listArchive } from "./archive.ts";
 import { install, installBlocker, listDevices, NeedsReplace, type Device } from "./devices.ts";
 
 const run = promisify(execFile);
@@ -1092,6 +1093,24 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
     if (req.method === "POST") {
       if (blocked) return send(res, 409, { error: blocked });
       resume(job);
+      return send(res, 200, { ok: true });
+    }
+  }
+
+  // The build's folder, one level at a time (the Files layout).
+  if (job && parts[3] === "files") {
+    if (!job.archiveDir || !existsSync(job.archiveDir)) return send(res, 404, { error: "this build has no folder (it never started, or it was deleted)" });
+    if (req.method === "GET" && !parts[4]) {
+      return listArchive(job.archiveDir, url.searchParams.get("path") ?? "").then(
+        (r) => send(res, 200, { root: job.archiveDir, ...r }),
+        (e: Error) => send(res, 400, { error: e.message }),
+      );
+    }
+    if (req.method === "POST" && parts[4] === "reveal") {
+      const b = (await readJson(req)) as { path?: unknown };
+      const target = inside(job.archiveDir, typeof b.path === "string" ? b.path : "");
+      if (!target || !existsSync(target)) return send(res, 404, { error: "no such file in this build's folder" });
+      spawn("open", ["-R", target], { stdio: "ignore" }).unref();
       return send(res, 200, { ok: true });
     }
   }
