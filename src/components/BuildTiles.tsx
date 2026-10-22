@@ -7,11 +7,12 @@ import {
   LayoutThreeColumnIcon,
   ListViewIcon,
   PackageIcon,
+  RocketIcon,
   StopIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useEffect, useState } from "react";
-import { api, duration, useNow, type Job, type JobStatus } from "@/api";
+import { api, duration, useDeployments, useNow, type Job, type JobStatus } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,6 +24,7 @@ import { useFlavorLabel } from "@/project";
 import { MODE_LABEL, PLATFORM_ICON } from "./BuildForm";
 import { ARM64_ONLY, BuildActions, installText, shortPath, STATUS } from "./build-status";
 import { FileBrowser } from "./BuildFiles";
+import { DeploymentsStrip } from "./DeploymentsStrip";
 
 const ORDER: JobStatus[] = ["running", "queued", "succeeded", "failed", "cancelled"];
 
@@ -62,8 +64,10 @@ function ago(t: number, now: number) {
  * or their folders in Finder-style columns.
  * Each has the status as a coloured edge; filter, grouping and layout persist.
  */
-export function BuildTiles({ jobs, onSelect, showProject = false }: { jobs: Job[]; onSelect: (id: string) => void; showProject?: boolean }) {
+export function BuildTiles({ projectId, jobs, onSelect, showProject = false }: { projectId: string | null; jobs: Job[]; onSelect: (id: string) => void; showProject?: boolean }) {
   const flavorLabel = useFlavorLabel();
+  const deployments = useDeployments(projectId);
+  const deployLabel = (id?: string) => (id ? deployments.find((d) => d.id === id)?.label : undefined);
   const [filter, setFilter] = useState<JobStatus | null>(null);
   const [groupBy, setGroupBy] = useState<GroupBy>(() => stored("fledge:group-builds", Object.keys(GROUP_LABEL) as GroupBy[], "none"));
   const [layout, setLayout] = useState<Layout>(() => stored("fledge:builds-layout", LAYOUTS.map((l) => l.id), "grid"));
@@ -80,7 +84,7 @@ export function BuildTiles({ jobs, onSelect, showProject = false }: { jobs: Job[
   const busyLanes = new Set(jobs.filter((j) => j.status === "running").map((j) => j.platform));
   const waitingFor = (j: Job) =>
     j.status === "queued" ? (busyLanes.has(j.platform) ? `waiting for the ${j.platform === "ios" ? "iOS" : "Android"} build ahead` : "starting…") : null;
-  const item = { now, flavorLabel, showProject, onSelect, waitingFor };
+  const item = { now, flavorLabel, showProject, onSelect, waitingFor, deployLabel };
   const shown = [...jobs]
     .filter((j) => !filter || j.status === filter)
     .sort((a, b) => {
@@ -115,6 +119,8 @@ export function BuildTiles({ jobs, onSelect, showProject = false }: { jobs: Job[
           </CardAction>
         )}
       </CardHeader>
+
+      <DeploymentsStrip deployments={deployments} jobs={jobs} onSelect={onSelect} />
 
       {jobs.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5 px-6">
@@ -230,6 +236,7 @@ interface ItemProps {
   showProject: boolean;
   onSelect: (id: string) => void;
   waitingFor: (j: Job) => string | null;
+  deployLabel: (id?: string) => string | undefined;
 }
 
 /** Opens a build's details on click, Enter or Space. */
@@ -247,7 +254,8 @@ const elapsed = (j: Job, now: number) => {
   return j.startedAt && end ? duration(end - j.startedAt) : "";
 };
 
-function Title({ job: j, flavorLabel }: { job: Job; flavorLabel: (f: string) => string }) {
+function Title({ job: j, flavorLabel, deployLabel }: { job: Job; flavorLabel: (f: string) => string; deployLabel?: (id?: string) => string | undefined }) {
+  const deploy = deployLabel?.(j.deployment);
   return (
     <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-sm">
       <span className="font-semibold">{flavorLabel(j.flavor)}</span>
@@ -264,6 +272,12 @@ function Title({ job: j, flavorLabel }: { job: Job; flavorLabel: (f: string) => 
           </TooltipTrigger>
           <TooltipContent className="max-w-64">Built for 64-bit ARM phones only. Not for testers or upload.</TooltipContent>
         </Tooltip>
+      )}
+      {deploy && (
+        <Badge variant="secondary" className="gap-1 text-[10px]" title="Part of this deployment">
+          <HugeiconsIcon icon={RocketIcon} className="size-3" />
+          {deploy}
+        </Badge>
       )}
     </div>
   );
@@ -285,7 +299,7 @@ function StatusText({ job: j, waiting }: { job: Job; waiting: string | null }) {
 }
 
 /** Grid: the Argo CD tile, with the facts in rows. */
-function BuildTile({ job: j, now, flavorLabel, showProject, onSelect, waitingFor }: ItemProps) {
+function BuildTile({ job: j, now, flavorLabel, showProject, onSelect, waitingFor, deployLabel }: ItemProps) {
   const installed = installText(j);
   return (
     <div
@@ -298,7 +312,7 @@ function BuildTile({ job: j, now, flavorLabel, showProject, onSelect, waitingFor
       <div className="flex items-start gap-2 px-3 pt-2.5">
         <HugeiconsIcon icon={PLATFORM_ICON[j.platform]} className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
-          <Title job={j} flavorLabel={flavorLabel} />
+          <Title job={j} flavorLabel={flavorLabel} deployLabel={deployLabel} />
           {showProject && j.projectName && <div className="truncate text-xs text-muted-foreground">{j.projectName}</div>}
         </div>
         <span className="shrink-0 pt-0.5 text-xs tabular-nums text-muted-foreground">{elapsed(j, now)}</span>
@@ -337,7 +351,7 @@ function BuildTile({ job: j, now, flavorLabel, showProject, onSelect, waitingFor
 }
 
 /** List: one dense row, the facts on a second line that truncates on narrow screens. */
-function BuildRow({ job: j, now, flavorLabel, showProject, onSelect, waitingFor }: ItemProps) {
+function BuildRow({ job: j, now, flavorLabel, showProject, onSelect, waitingFor, deployLabel }: ItemProps) {
   const installed = installText(j);
   const version = versionOf(j);
   return (
@@ -351,7 +365,7 @@ function BuildRow({ job: j, now, flavorLabel, showProject, onSelect, waitingFor 
       <HugeiconsIcon icon={PLATFORM_ICON[j.platform]} className="size-4 shrink-0 text-muted-foreground" />
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5">
-          <Title job={j} flavorLabel={flavorLabel} />
+          <Title job={j} flavorLabel={flavorLabel} deployLabel={deployLabel} />
           <span className="min-w-0 text-xs">
             <StatusText job={j} waiting={waitingFor(j)} />
           </span>
@@ -369,7 +383,7 @@ function BuildRow({ job: j, now, flavorLabel, showProject, onSelect, waitingFor 
 }
 
 /** Columns: a compact card for the board. */
-function BuildCard({ job: j, now, flavorLabel, showProject, onSelect, waitingFor }: ItemProps) {
+function BuildCard({ job: j, now, flavorLabel, showProject, onSelect, waitingFor, deployLabel }: ItemProps) {
   const installed = installText(j);
   const version = versionOf(j);
   return (
@@ -383,7 +397,7 @@ function BuildCard({ job: j, now, flavorLabel, showProject, onSelect, waitingFor
       <div className="flex items-start gap-1.5">
         <HugeiconsIcon icon={PLATFORM_ICON[j.platform]} className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
-          <Title job={j} flavorLabel={flavorLabel} />
+          <Title job={j} flavorLabel={flavorLabel} deployLabel={deployLabel} />
         </div>
         <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">{elapsed(j, now)}</span>
       </div>

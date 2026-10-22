@@ -24,6 +24,8 @@ export interface Info {
   flavors: ProjectInfo["flavors"];
   toggles: ProjectInfo["toggles"];
   releases: boolean;
+  deployRoutes: ProjectInfo["deployRoutes"];
+  shipChannel: string | null;
 }
 
 export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
@@ -55,6 +57,7 @@ export interface Job {
   steps?: BuildStep[]; // missing on builds recorded before steps were
   attempt?: number; // 2 and up once resumed
   version?: string; // the version it was queued to build (verified.version is what came out)
+  deployment?: string; // the deployment it was queued for
 }
 
 /** One level of a build's folder (build/fledge/…), for the Files layout. */
@@ -523,3 +526,60 @@ export const shipApi = {
 
 /** Whether a finished build has a file Slack can take. */
 export const SHIPPABLE = (j: Job) => j.status === "succeeded" && ["apk", "appbundle", "ipa"].includes(j.artifact);
+
+// ------------------------------------------------------------------ deploys
+
+export type DeployStatus = "building" | "posting" | "posted" | "held" | "cancelled" | "failed";
+
+export interface Deployment {
+  id: string;
+  project: string;
+  route: string | null;
+  label: string;
+  channel: string;
+  branch: string;
+  sha: string;
+  builds: string[];
+  notes: string;
+  status: DeployStatus;
+  error?: string;
+  progress?: string;
+  createdAt: number;
+  endedAt?: number;
+  posted?: { at: number; files: string[]; missing: string[] };
+}
+
+/** What to deploy: a route of the app's, or the form's selection and a channel. */
+export type DeployWhat = { project: string; checkout?: string } & ({ route: string } | { targets: unknown; options: unknown; channel: string });
+
+export interface DeployPreview {
+  label: string;
+  channel: string;
+  version: string;
+  checkout: { branch: string; sha: string };
+  builds: { platform: Platform; flavor: string; mode: Mode; artifact: string }[];
+  skipped: SkippedBuild[];
+  since: string | null;
+  notes: string;
+}
+
+export const deployApi = {
+  preview: (what: DeployWhat) => post<DeployPreview>("/api/deploy/preview", what),
+  start: (what: DeployWhat, notes: string) => post<{ id: string; builds: string[] }>("/api/deploy", { ...what, notes }),
+  list: (project: string) => send<Deployment[]>("GET", `/api/deployments?project=${encodeURIComponent(project)}`),
+  postWhatBuilt: (id: string) => post<Deployment>(`/api/deployments/${id}/post`),
+  cancel: (id: string) => post<Deployment>(`/api/deployments/${id}/cancel`),
+};
+
+/** The app's deployments, newest first, kept live. */
+export function useDeployments(project: string | null) {
+  const [list, setList] = useState<Deployment[]>([]);
+  useEffect(() => {
+    if (!project) return setList([]);
+    void deployApi.list(project).then(setList, () => {});
+    return subscribe("deployments", (data) =>
+      setList((data as Deployment[]).filter((d) => d.project === project).sort((a, b) => b.createdAt - a.createdAt)),
+    );
+  }, [project]);
+  return list;
+}

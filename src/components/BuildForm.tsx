@@ -2,17 +2,19 @@ import {
   Alert02Icon,
   AndroidIcon,
   AppleIcon,
-
+  ArrowDown01Icon,
   InformationCircleIcon,
   Layers01Icon,
   PlayIcon,
+  RocketIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useEffect, useMemo, useState } from "react";
-import { api, type BuildOptions, type Checkout, type Flavor, type Mode, type PlanResult, type Platform } from "@/api";
+import { api, type BuildOptions, type Checkout, type DeployWhat, type Flavor, type Mode, type PlanResult, type Platform } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
@@ -21,6 +23,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useFlavorLabel, useProject } from "@/project";
+import { DeployDialog } from "./DeployDialog";
 
 const MODE_LABEL: Record<Mode, string> = { debug: "Debug", profile: "Profile", release: "Release" };
 export const PLATFORM_ICON: Record<Platform, IconSvgElement> = { android: AndroidIcon, ios: AppleIcon };
@@ -119,6 +122,7 @@ export function BuildForm({ projectId, checkout }: { projectId: string; checkout
   const [submitting, setSubmitting] = useState(false);
   const [confirmProd, setConfirmProd] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [deploying, setDeploying] = useState<DeployWhat | null>(null);
 
   const project = useProject();
   const flavorLabel = useFlavorLabel();
@@ -432,15 +436,53 @@ export function BuildForm({ projectId, checkout }: { projectId: string; checkout
             Includes {confirmNames} builds{confirmProd ? " — click again to confirm." : "."}
           </p>
         )}
-        <Button
-          size="lg"
-          disabled={!count || submitting || !checkout}
-          variant={confirmProd ? "destructive" : "default"}
-          onClick={submit}
-        >
-          <HugeiconsIcon icon={PlayIcon} className="size-4" />
-          {confirmProd ? `Yes, queue ${count} incl. ${confirmNames}` : `Queue ${count} build${count === 1 ? "" : "s"}`}
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            size="lg"
+            className="flex-1"
+            disabled={!count || submitting || !checkout}
+            variant={confirmProd ? "destructive" : "default"}
+            onClick={submit}
+          >
+            <HugeiconsIcon icon={PlayIcon} className="size-4" />
+            {confirmProd ? `Yes, queue ${count} incl. ${confirmNames}` : `Queue ${count} build${count === 1 ? "" : "s"}`}
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="lg" variant="outline" disabled={!checkout} aria-label="Deploy">
+                <HugeiconsIcon icon={RocketIcon} className="size-4" />
+                Deploy
+                <HugeiconsIcon icon={ArrowDown01Icon} className="size-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-72">
+              <DropdownMenuLabel className="text-xs text-muted-foreground">Build, then post the notes and files</DropdownMenuLabel>
+              {project.deployRoutes.map((r) => (
+                <DropdownMenuItem key={r.id} onSelect={() => setDeploying({ project: projectId, checkout: checkout?.path, route: r.id })}>
+                  <div className="min-w-0">
+                    <div className="font-medium">{r.label}</div>
+                    <div className="truncate text-xs text-muted-foreground">
+                      {r.builds.map((b) => `${flavorLabel(b.environment)} ${b.mode} ${b.platform === "ios" ? "iOS" : "Android"}`).join(", ")} → {r.channel}
+                    </div>
+                  </div>
+                </DropdownMenuItem>
+              ))}
+              {project.deployRoutes.length === 0 && (
+                <p className="px-2 py-1.5 text-xs text-muted-foreground">No routes yet: add them under "deploy" in this app's config.</p>
+              )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem disabled={!request || !count} onSelect={() => request && setDeploying({ project: projectId, checkout: request.checkout, targets: request.targets, options: request.options, channel: "" })}>
+                Deploy what's selected ({count} build{count === 1 ? "" : "s"})…
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+        <DeployDialog
+          open={!!deploying}
+          onOpenChange={(o) => !o && setDeploying(null)}
+          what={deploying}
+          onStarted={() => setMessage("Deploying: it posts once every build is done.")}
+        />
         {message && <p className="text-center text-xs text-muted-foreground">{message}</p>}
       </CardFooter>
     </Card>

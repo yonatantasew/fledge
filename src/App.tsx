@@ -138,7 +138,13 @@ export function App() {
   const ready = !!current?.ready && !!info;
 
   const project = useMemo(
-    () => ({ flavors: info?.flavors ?? [], toggles: info?.toggles ?? [], releases: info?.releases ?? false }),
+    () => ({
+      flavors: info?.flavors ?? [],
+      toggles: info?.toggles ?? [],
+      releases: info?.releases ?? false,
+      deployRoutes: info?.deployRoutes ?? [],
+      shipChannel: info?.shipChannel ?? null,
+    }),
     [info],
   );
 
@@ -349,7 +355,7 @@ export function App() {
                 {job ? (
                   <BuildDetails job={job} log={logs[job.id]} onBack={() => setSelected(null)} />
                 ) : (
-                  <BuildTiles jobs={jobs} onSelect={setSelected} showProject={(projects?.length ?? 0) > 1} />
+                  <BuildTiles projectId={projectId} jobs={jobs} onSelect={setSelected} showProject={(projects?.length ?? 0) > 1} />
                 )}
               </div>
             </main>

@@ -5,9 +5,11 @@ export interface ProjectInfo {
   flavors: { name: string; label: string; confirm: boolean }[];
   toggles: { id: string; label: string; hint: string; skipFlavors: string[] }[];
   releases: boolean;
+  deployRoutes: { id: string; label: string; channel: string; builds: { platform: "android" | "ios"; environment: string; mode: string }[] }[];
+  shipChannel: string | null;
 }
 
-export const ProjectContext = createContext<ProjectInfo>({ flavors: [], toggles: [], releases: false });
+export const ProjectContext = createContext<ProjectInfo>({ flavors: [], toggles: [], releases: false, deployRoutes: [], shipChannel: null });
 
 export const useProject = () => useContext(ProjectContext);
 

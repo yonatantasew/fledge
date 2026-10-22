@@ -1033,6 +1033,8 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
       flavors: project.config?.flavors.map(({ name, label, confirm }) => ({ name, label, confirm })) ?? [],
       toggles: project.config?.toggles.map(({ id, label, hint, skipFlavors }) => ({ id, label, hint, skipFlavors })) ?? [],
       releases: !!project.config?.release,
+      deployRoutes: project.config?.deploy.map(({ id, label, builds, to }) => ({ id, label, builds, channel: to.slack })) ?? [],
+      shipChannel: project.config?.ship?.slack?.channel ?? null,
     });
   }
 
