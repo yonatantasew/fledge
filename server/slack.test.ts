@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
-import { channelId, shipFile } from "./slack.ts";
+import { channelId, shipFile, shipFiles } from "./slack.ts";
 
 const dir = mkdtempSync(path.join(tmpdir(), "fledge-slack-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -66,4 +66,31 @@ test("Slack's errors come back with what to do about them", async () => {
     "files.completeUploadExternal": { ok: false, error: "not_in_channel" },
   });
   await assert.rejects(shipFile("xoxb-t", "C9", { path: file, name: "b.apk" }, "m", () => {}), /not_in_channel — the bot isn't in that channel; in Slack, type \/invite/);
+});
+
+test("several files go up one by one, then share in one message", async () => {
+  const a = path.join(dir, "a.apk");
+  const i = path.join(dir, "i.ipa");
+  writeFileSync(a, "a");
+  writeFileSync(i, "ii");
+  let n = 0;
+  const calls = fakeSlack({});
+  const inner = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    if (String(url).endsWith("files.getUploadURLExternal")) {
+      calls.push({ url: String(url), body: init.body });
+      n++;
+      return Response.json({ ok: true, upload_url: `https://files.example/${n}`, file_id: `F${n}` });
+    }
+    if (String(url).endsWith("files.completeUploadExternal")) {
+      calls.push({ url: String(url), body: init.body });
+      return Response.json({ ok: true });
+    }
+    return inner(url, init);
+  }) as typeof fetch;
+  assert.deepEqual(await shipFiles("xoxb-t", "C9", [{ path: a, name: "a.apk" }, { path: i, name: "i.ipa" }], "notes", () => {}), ["F1", "F2"]);
+  const done = new URLSearchParams(String(calls.at(-1)!.body));
+  assert.deepEqual(JSON.parse(done.get("files")!), [{ id: "F1", title: "a.apk" }, { id: "F2", title: "i.ipa" }]);
+  assert.equal(calls.filter((c) => c.url.endsWith("completeUploadExternal")).length, 1);
+  await assert.rejects(shipFiles("xoxb-t", "C9", [], "x", () => {}), /1 to 10 files/);
 });

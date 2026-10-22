@@ -12,28 +12,30 @@
 // time, and starts the builds with --no-pub.
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { createReadStream, existsSync } from "node:fs";
-import { appendFile, cp, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { createReadStream, existsSync, statSync } from "node:fs";
+import { appendFile, cp, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { promisify } from "node:util";
 import { artifactPath, parseRequest, planBuild, resolveFlutter, XCARCHIVE_PATH, type PlannedBuild, type SkippedBuild } from "./commands.ts";
 import { generateCommands, tokenize } from "./templates.ts";
 import { cancelLogin, firebaseStatus, onFirebaseChange, startLogin } from "./firebase.ts";
-import { bumpValues, templateGithub, templateSlack, type ReleaseFacts } from "./notes.ts";
-import { connections, gatherFacts, notesRequest, publish, releases, validatePublish } from "./release.ts";
+import { bumpValues, templateDeploy, templateGithub, templateSlack, type ReleaseFacts } from "./notes.ts";
+import { changesBetween, connections, gatherFacts, notesRequest, publish, releases, validatePublish } from "./release.ts";
+import { Deployer, deployKey, type Deployment } from "./deploy.ts";
 import { answerApproval, getConversation, listConversations, newConversation, pendingApprovals, send as sendToAssistant } from "./ai/agent.ts";
 import { availableModels, connectorFor, listProviders, removeProvider, saveProvider, setActive } from "./ai/providers.ts";
 import { MCP_CONVERSATION, mcpServer } from "./ai/mcp.ts";
 import { structuredAnswer } from "./ai/structured.ts";
 import type { ToolContext } from "./ai/tools.ts";
 import { startable } from "./scheduler.ts";
-import { fill, flavorOf, parseConfig, type FledgeConfig } from "./config.ts";
-import { setSlackToken, shipFile, slackToken, whoAmI } from "./slack.ts";
+import { fill, flavorOf, parseConfig, SLACK_CHANNEL, type FledgeConfig } from "./config.ts";
+import { setSlackToken, shipFile, shipFiles, slackToken, whoAmI } from "./slack.ts";
 import { detectProject } from "./detect.ts";
 import {
   addProject,
   findCandidates,
+  FLEDGE_HOME,
   flutterRepoRoot,
   getProject,
   listEntries,
@@ -178,6 +180,7 @@ interface Job {
   error?: string;
   install?: { state: "installing" | "installed" | "failed" | "needs-replace"; device: string; message?: string; at: number };
   steps?: Step[]; // missing on builds recorded before steps were
+  deployment?: string; // the deployment it was queued for
   version?: string; // the version it was queued to build (verified.version is what came out)
   argv?: string[]; // the exact command, kept so a stopped build can be resumed after a restart
   tree?: string; // fingerprint of the checkout when the build stopped or failed (see fingerprint())
@@ -231,7 +234,11 @@ function broadcast(event: string, data: unknown) {
   const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const c of clients) c.write(msg);
 }
-const publishJobs = () => broadcast("jobs", jobs);
+let deployer: Deployer | null = null; // set up with the deployments, further down
+const publishJobs = () => {
+  broadcast("jobs", jobs);
+  deployer?.tick(); // a build that finished may be the last one a deployment waits for
+};
 onFirebaseChange((s) => broadcast("firebase", s));
 
 async function log(job: Job, chunk: string) {
@@ -889,6 +896,99 @@ async function runShip(job: Job, plan: { channel: string; text: string; file: { 
   }
 }
 
+// ---------------------------------------------------------------- deployments
+
+// Builds that are posted together, with notes, once all have built (deploy.ts).
+const DEPLOYMENTS = path.join(FLEDGE_HOME, "deployments.json");
+const savedDeployments: Deployment[] = await readFile(DEPLOYMENTS, "utf8").then((t) => JSON.parse(t) as Deployment[], () => []);
+// A restart mid-post can't know whether Slack got it.
+for (const d of savedDeployments) if (d.status === "posting") ((d.status = "failed"), (d.error = "fledge restarted while posting; check the channel, then post again"));
+
+const deployments = new Deployer(
+  {
+    build(id) {
+      const j = jobs.find((x) => x.id === id);
+      if (!j) return undefined;
+      const file = j.status === "succeeded" && j.artifactFile && existsSync(j.artifactFile) ? j.artifactFile : null;
+      return {
+        status: j.status,
+        name: `${j.flavor} ${j.mode} ${j.platform === "ios" ? "iOS" : "Android"} ${j.artifact}`,
+        file: file ? { path: file, name: path.basename(file), size: statSync(file).size } : undefined,
+      };
+    },
+    async post(channel, files, text) {
+      const token = await slackToken();
+      if (!token) throw new Error("Slack isn't connected on this Mac: connect it from a build's Slack button");
+      await shipFiles(token, channel, files, text, () => {});
+    },
+    cancelBuild(id) {
+      const j = jobs.find((x) => x.id === id);
+      if (j) cancel(j);
+    },
+    changed(list) {
+      broadcast("deployments", list);
+      void mkdir(FLEDGE_HOME, { recursive: true })
+        .then(() => writeFile(`${DEPLOYMENTS}.tmp`, JSON.stringify(list, null, 2)))
+        .then(() => rename(`${DEPLOYMENTS}.tmp`, DEPLOYMENTS))
+        .catch(() => {});
+    },
+  },
+  savedDeployments,
+);
+deployer = deployments;
+
+/** A deploy request: a route of the app's, or the builds and channel picked by hand. */
+async function deployRequest(b: Record<string, unknown>) {
+  const project = await getProject(b.project);
+  if (!project?.config) return { error: "unknown app, or its config doesn't load" };
+  let label = "Deploy";
+  let channel: string;
+  let targets: unknown;
+  let options: unknown;
+  const route = typeof b.route === "string" ? project.config.deploy.find((r) => r.id === b.route) : undefined;
+  if (b.route !== undefined && !route) return { error: `this app has no deploy route "${String(b.route)}"` };
+  if (route) {
+    label = route.label;
+    channel = route.to.slack;
+    targets = route.builds.map((x) => ({ platform: x.platform, flavor: x.environment, mode: x.mode }));
+    const o = route.options;
+    options = { androidArtifact: o.androidOutput, iosArtifact: o.iosOutput, exportMethod: o.exportMethod, splitDebugInfo: o.splitDebugInfo, obfuscate: o.obfuscate, arm64Only: o.arm64Only, toggles: o.toggles };
+  } else {
+    if (typeof b.channel !== "string" || !SLACK_CHANNEL.test(b.channel)) return { error: "a channel like #deployments is needed" };
+    channel = b.channel;
+    targets = b.targets;
+    options = b.options;
+  }
+  const p = await plan({ project: project.id, checkout: b.checkout, targets, options });
+  if ("error" in p) return { error: String(p.error) };
+  if (!p.builds.length) return { error: `nothing can be built: ${p.skipped.map((x) => x.reason).join("; ")}` };
+  if (p.builds.length > 10) return { error: "one Slack message holds 10 files; deploy at most 10 builds" };
+  const head = (await run("git", ["-C", p.checkout.path, "rev-parse", "HEAD"])).stdout.trim();
+  const key = deployKey(route?.id ?? null, channel, p.builds.map((x) => x.flavor));
+  return { project, route: route?.id ?? null, label, channel, plan: p, head, key };
+}
+
+/** The notes a deploy would post: what changed since the last deploy under the same key. */
+async function deployNotes(r: Exclude<Awaited<ReturnType<typeof deployRequest>>, { error: string }>) {
+  const since = deployments.lastPosted(r.project.id, r.key);
+  const changes = await changesBetween(r.project, r.plan.checkout.path, since, r.head);
+  const label = (f: string) => flavorOf(r.project.config!, f)?.label ?? f;
+  return {
+    since,
+    notes: templateDeploy({
+      app: r.project.name,
+      label: r.label,
+      version: r.plan.version,
+      builds: r.plan.builds.map((x) => ({ environment: label(x.flavor), mode: x.mode, platform: x.platform, output: x.artifact })),
+      branch: r.plan.checkout.branch,
+      sha: r.head,
+      since,
+      prs: changes.prs,
+      commits: changes.commits,
+    }),
+  };
+}
+
 // --------------------------------------------------------------------- http
 
 function send(res: http.ServerResponse, status: number, body: unknown) {
@@ -1125,6 +1225,52 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
       );
     }
     if (req.method === "DELETE") return setSlackToken(null).then(() => send(res, 200, { connected: false }));
+  }
+
+  // Deployments: preview the notes, start one, list them, post what built, cancel.
+  if (url.pathname === "/api/deployments" && req.method === "GET") return send(res, 200, deployments.all(url.searchParams.get("project") ?? undefined));
+  if (url.pathname === "/api/deploy/preview" && req.method === "POST") {
+    const r = await deployRequest((await readJson(req)) as Record<string, unknown>);
+    if ("error" in r) return send(res, 400, r);
+    const n = await deployNotes(r).catch((e: Error) => ({ error: e.message }));
+    if ("error" in n) return send(res, 502, { error: `couldn't gather the changes: ${n.error}` });
+    return send(res, 200, {
+      label: r.label,
+      channel: r.channel,
+      version: r.plan.version,
+      checkout: { branch: r.plan.checkout.branch, sha: r.head },
+      builds: r.plan.builds.map((x) => ({ platform: x.platform, flavor: x.flavor, mode: x.mode, artifact: x.artifact })),
+      skipped: r.plan.skipped,
+      since: n.since,
+      notes: n.notes,
+    });
+  }
+  if (url.pathname === "/api/deploy" && req.method === "POST") {
+    const b = (await readJson(req, 256 << 10)) as Record<string, unknown>;
+    if (typeof b.notes !== "string" || !b.notes.trim()) return send(res, 400, { error: "the notes are empty" });
+    if (b.notes.length > 30_000) return send(res, 400, { error: "the notes are too long for one Slack message" });
+    const r = await deployRequest(b);
+    if ("error" in r) return send(res, 400, r);
+    const id = `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const queued = enqueue(r.plan);
+    for (const j of queued) j.deployment = id;
+    deployments.add({
+      id, project: r.project.id, route: r.route, key: r.key, label: r.label, channel: r.channel,
+      checkout: r.plan.checkout.path, branch: r.plan.checkout.branch, sha: r.head,
+      builds: queued.map((j) => j.id), notes: b.notes, status: "building", createdAt: Date.now(),
+    });
+    publishJobs();
+    return send(res, 200, { id, builds: queued.map((j) => j.id) });
+  }
+  const deployRoute = /^\/api\/deployments\/([a-z0-9]+)\/(post|cancel)$/.exec(url.pathname);
+  if (deployRoute && req.method === "POST") {
+    try {
+      if (deployRoute[2] === "cancel") deployments.cancel(deployRoute[1]);
+      else await deployments.postWhatBuilt(deployRoute[1]);
+      return send(res, 200, deployments.get(deployRoute[1]));
+    } catch (e) {
+      return send(res, 409, { error: (e as Error).message });
+    }
   }
 
   if (req.method === "POST" && url.pathname === "/api/plan") return send(res, 200, await plan(await readJson(req)));

@@ -73,17 +73,23 @@ export async function channelId(token: string, channel: string) {
 
 /** Uploads a file into a channel with a message. Returns the uploaded file's id. */
 export async function shipFile(token: string, channel: string, file: { path: string; name: string }, text: string, say: (line: string) => void) {
+  return (await shipFiles(token, channel, [file], text, say))[0];
+}
+
+/** Uploads files (at most 10) and shares them in one message in the channel. Returns their ids. */
+export async function shipFiles(token: string, channel: string, files: { path: string; name: string }[], text: string, say: (line: string) => void) {
+  if (!files.length || files.length > 10) throw new Error("one Slack message holds 1 to 10 files");
   const id = await channelId(token, channel);
-  const { size } = await stat(file.path);
-  say(`Uploading ${file.name} (${(size / 1048576).toFixed(1)} MB) to ${channel}…\n`);
-  const up = await api(token, "files.getUploadURLExternal", { filename: file.name, length: String(size) });
-  const sent = await fetch(String(up.upload_url), { method: "POST", body: await readFile(file.path) });
-  if (!sent.ok) throw new Error(`Slack refused the upload (${sent.status})`);
-  await api(token, "files.completeUploadExternal", {
-    files: JSON.stringify([{ id: String(up.file_id), title: file.name }]),
-    channel_id: id,
-    initial_comment: text,
-  });
+  const uploaded: { id: string; title: string }[] = [];
+  for (const file of files) {
+    const { size } = await stat(file.path);
+    say(`Uploading ${file.name} (${(size / 1048576).toFixed(1)} MB) to ${channel}…\n`);
+    const up = await api(token, "files.getUploadURLExternal", { filename: file.name, length: String(size) });
+    const sent = await fetch(String(up.upload_url), { method: "POST", body: await readFile(file.path) });
+    if (!sent.ok) throw new Error(`Slack refused the upload of ${file.name} (${sent.status})`);
+    uploaded.push({ id: String(up.file_id), title: file.name });
+  }
+  await api(token, "files.completeUploadExternal", { files: JSON.stringify(uploaded), channel_id: id, initial_comment: text });
   say(`Posted to ${channel}.\n`);
-  return String(up.file_id);
+  return uploaded.map((u) => u.id);
 }
