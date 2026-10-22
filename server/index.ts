@@ -657,6 +657,13 @@ const assistantContext: ToolContext = {
       publishing = false;
     }
   },
+  async prepareResume(id) {
+    const job = jobs.find((j) => j.id === id);
+    if (!job) throw new Error("no build with that id");
+    const blocked = await resumeBlocker(job);
+    if (blocked) throw new Error(blocked);
+    return { attempt: (job.attempt ?? 1) + 1, resume: () => resume(job) };
+  },
   cancelBuild(id) {
     const job = jobs.find((j) => j.id === id);
     if (job) cancel(job);

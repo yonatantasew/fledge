@@ -49,6 +49,8 @@ export interface ToolContext {
     queue(): string[];
   }>;
   cancelBuild(id: string): void;
+  /** Checks a stopped or failed build can run again unchanged; resume() queues it. Throws with the reason otherwise. */
+  prepareResume(id: string): Promise<{ attempt: number; resume(): void }>;
   /** Checks a build can go on the device now; install() runs it and reports how it went. Throws otherwise. */
   prepareInstall(buildId: string, deviceId: string): Promise<{ device: string; install(opts: { launch: boolean; replace: boolean }): Promise<unknown> }>;
   /** The next release: its facts without the excluded PRs (and version bumps), and the template notes. Slow. */
@@ -483,6 +485,27 @@ const TOOLS: Tool[] = [
         async run() {
           ctx.cancelBuild(b.id);
           return "Cancelled.";
+        },
+      };
+    },
+  },
+  {
+    def: {
+      name: "resume_build",
+      description:
+        "Run a stopped or failed build again as the same build (needs the developer's approval): the same command in the same checkout, which reuses Gradle's and Xcode's finished work. Refused if the checkout's commit or files changed since it stopped.",
+      schema: obj({ build_id: str("The build's id from list_builds.") }, ["build_id"]),
+    },
+    async prepare(i, ctx) {
+      const b = ctx.builds().find((x) => x.id === i.build_id);
+      if (!b) throw new Error("no build with that id");
+      const r = await ctx.prepareResume(b.id);
+      return {
+        title: `Resume ${b.flavor} ${b.mode} ${b.platform} ${b.artifact}`,
+        details: [`${b.project ?? ""} on ${b.branch} @ ${b.sha.slice(0, 8)}, unchanged since it ${b.status === "failed" ? "failed" : "stopped"}`, `Attempt ${r.attempt}, the same command: ${b.command}`],
+        async run() {
+          r.resume();
+          return "Queued again; list_builds shows its progress.";
         },
       };
     },

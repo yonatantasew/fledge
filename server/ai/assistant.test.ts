@@ -22,6 +22,9 @@ const ctx: ToolContext = {
   plan: async () => ({ command: "flutter build apk --debug" }),
   prepareBuilds: async () => ({ builds: [], skipped: [], queue: () => [] }),
   cancelBuild: () => {},
+  prepareResume: async () => {
+    throw new Error("only a stopped or failed build can be resumed");
+  },
   prepareInstall: async () => {
     throw new Error("no devices");
   },

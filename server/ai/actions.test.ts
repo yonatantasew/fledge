@@ -50,6 +50,7 @@ const facts = {
 const published: unknown[] = [];
 
 const queued: unknown[] = [];
+const resumed: string[] = [];
 const cancelled: string[] = [];
 const ctx: ToolContext = {
   apps: async () => [{ id: "demo", name: "demo", root, ready: true, source: "local", error: null }],
@@ -58,6 +59,7 @@ const ctx: ToolContext = {
   checkouts: async () => [{ path: root, branch: git(root, "branch", "--show-current"), sha: git(root, "rev-parse", "HEAD"), dirty: 0, version: "1.0.0+1" }],
   builds: () => [
     { id: "run1", project: "demo", flavor: "staging", mode: "release", platform: "android", artifact: "apk", status: "running", branch: "main", sha: "abcdef12", checkout: root, command: "x", createdAt: 1, startedAt: Date.now() },
+    { id: "stopped1", project: "demo", flavor: "staging", mode: "release", platform: "ios", artifact: "ipa", status: "cancelled", branch: "main", sha: "abcdef12", checkout: root, command: "flutter build ipa --release", createdAt: 1 },
     { id: "done1", project: "demo", flavor: "staging", mode: "release", platform: "android", artifact: "apk", status: "succeeded", branch: "main", sha: "abcdef12", checkout: root, command: "x", createdAt: 1 },
   ],
   log: () => undefined,
@@ -73,6 +75,10 @@ const ctx: ToolContext = {
     };
   },
   cancelBuild: (id) => void cancelled.push(id),
+  async prepareResume(id) {
+    if (id !== "stopped1") throw new Error("only a stopped or failed build can be resumed");
+    return { attempt: 2, resume: () => void resumed.push(id) };
+  },
   async prepareInstall(_build, device) {
     if (device !== "phone1") throw new Error("that device is not connected");
     return { device: "Pixel (Android 16)", install: async (opts) => ({ state: "installed", ...opts }) };
@@ -91,7 +97,7 @@ const yes = async () => true;
 const no = async () => false;
 
 test("actions are marked, and lookups aren't", () => {
-  for (const name of ["create_branch", "push_branch", "start_builds", "cancel_build", "install_build", "publish_release", "jira_comment", "jira_transition"]) {
+  for (const name of ["create_branch", "push_branch", "start_builds", "cancel_build", "resume_build", "install_build", "publish_release", "jira_comment", "jira_transition"]) {
     assert.ok(isAction(name), name);
   }
   assert.ok(!isAction("release_notes"));
@@ -249,4 +255,15 @@ test("Jira actions show the ticket, then run acli with exactly what was approved
   assert.match((await runTool("jira_transition", { key: "PROJ-1", status: "in review" }, ctx, yes)).content, /already In Review/);
   assert.match((await runTool("jira_comment", { key: "proj-1; rm", text: "x" }, ctx, yes)).content, /not a ticket key/);
   assert.match((await runTool("jira_comment", { key: "PROJ-1", text: "   " }, ctx, yes)).content, /empty/);
+});
+
+test("resume_build names the attempt and the same command, and resumes only when approved", async () => {
+  let asked: Approval | undefined;
+  await runTool("resume_build", { build_id: "stopped1" }, ctx, async (a) => ((asked = a), false));
+  assert.deepEqual(resumed, []);
+  assert.equal(asked?.title, "Resume staging release ios ipa");
+  assert.ok(asked?.details.some((d) => d.startsWith("Attempt 2, the same command: flutter build ipa --release")));
+  assert.equal((await runTool("resume_build", { build_id: "stopped1" }, ctx, yes)).isError, false);
+  assert.deepEqual(resumed, ["stopped1"]);
+  assert.match((await runTool("resume_build", { build_id: "done1" }, ctx, yes)).content, /only a stopped or failed build/);
 });
