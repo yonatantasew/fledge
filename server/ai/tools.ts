@@ -59,8 +59,8 @@ export interface ToolContext {
   /** What a deploy would do and post (notes since the last deploy); start() queues it. Throws when it can't. */
   prepareDeploy(
     appId: string,
-    req: { route?: string; targets?: unknown; options?: unknown; channel?: string; checkout?: string },
-  ): Promise<{ label: string; channel: string; version: string; branch: string; sha: string; since: string | null; notes: string; builds: { name: string; confirm: boolean }[]; start(notes: string): string }>;
+    req: { route?: string; targets?: unknown; options?: unknown; channel?: string; checkout?: string; post?: string; onFailure?: string },
+  ): Promise<{ label: string; channel: string; version: string; branch: string; sha: string; since: string | null; notes: string; post: string; onFailure: string; builds: { name: string; confirm: boolean }[]; start(notes: string): string }>;
   /** What shipping a build to Slack would post; ship() posts it. Throws when it can't be shipped. */
   prepareShip(buildId: string, note: string): Promise<{ channel: string; text: string; file: string; size: number; ship(): Promise<unknown> }>;
   /** The next release: its facts without the excluded PRs (and version bumps), and the template notes. Slow. */
@@ -606,6 +606,10 @@ const TOOLS: Tool[] = [
           export_method: str("With builds, for an ipa (default app-store).", { enum: ["app-store", "ad-hoc", "development"] }),
           checkout: str("A checkout path or branch (default: the main checkout)."),
           note: str("A line for testers added under the notes, e.g. what to test."),
+          post: str(
+            "How to post (default: the route's setting, else together): together = one message once all have built, nothing if one fails; together-post-built = the same, but a failure posts what built; as-built = the notes with the first build, later ones replying in its thread.",
+            { enum: ["together", "together-post-built", "as-built"] },
+          ),
         },
         ["app"],
       ),
@@ -622,7 +626,8 @@ const TOOLS: Tool[] = [
             targets: (i.builds as { environment: string; platform: string; mode: string }[]).map((b) => ({ platform: b.platform, flavor: b.environment, mode: b.mode })),
             options: { androidArtifact: i.android_output, iosArtifact: i.ios_output, exportMethod: i.export_method },
           };
-      const d = await ctx.prepareDeploy(a.id, req);
+      const how = i.post === "as-built" ? { post: "as-built" } : i.post === "together-post-built" ? { post: "together", onFailure: "post-built" } : i.post === "together" ? { post: "together", onFailure: "hold" } : {};
+      const d = await ctx.prepareDeploy(a.id, { ...req, ...how });
       const notes = typeof i.note === "string" && i.note.trim() ? `${d.notes}\n\n${i.note.trim()}` : d.notes;
       const items = notes.split("\n").filter((l) => /^\d+\. /.test(l)).length;
       const confirm = d.builds.filter((b) => b.confirm).map((b) => b.name);
@@ -633,7 +638,11 @@ const TOOLS: Tool[] = [
           `From ${d.branch} @ ${d.sha.slice(0, 8)}, version ${d.version}`,
           `Notes: ${items ? `${items} change${items === 1 ? "" : "s"}` : "no listed changes"} since ${d.since ? `the last deploy (${d.since.slice(0, 8)})` : "the last release"}${i.note ? ", plus your note" : ""}`,
           ...(confirm.length ? [`Includes builds that ask for confirmation: ${confirm.join(", ")}`] : []),
-          "Posts once every build has built; nothing is posted if one fails",
+          d.post === "as-built"
+            ? "Posts the notes with the first build to finish; each later one replies in their thread"
+            : d.onFailure === "post-built"
+              ? "Posts once every build is done; a failed one is listed as not built"
+              : "Posts once every build has built; nothing is posted if one fails",
         ],
         async run() {
           return { deployment: d.start(notes), note: "list_deployments shows its progress" };

@@ -655,6 +655,8 @@ const assistantContext: ToolContext = {
       sha: r.head,
       since: n.since,
       notes: n.notes,
+      post: r.mode,
+      onFailure: r.onFailure,
       builds: r.plan.builds.map((b) => {
         const f = flavors.find((x) => x.name === b.flavor);
         return { name: `${f?.label ?? b.flavor} ${b.mode} ${b.platform === "ios" ? "iOS" : "Android"} ${b.artifact}`, confirm: !!f?.confirm };

@@ -98,6 +98,8 @@ const ctx: ToolContext = {
       sha: "7bb364f2aaaa",
       since: "1a2b3c4d5555",
       notes: "*demo* · QA: staging\n\nChanges since the last deploy (1a2b3c4d):\n1. A — PROJ-1\n   DRI: @A\n2. B — PROJ-2\n   DRI: @B",
+      post: req.post ?? "together",
+      onFailure: req.onFailure ?? "hold",
       builds: [{ name: "Staging release Android apk", confirm: false }, { name: "Prod release iOS ipa", confirm: true }],
       start: (notes: string) => (deploys.push({ notes }), "d1"),
     };
@@ -318,4 +320,7 @@ test("deploy describes the builds, the channel and the notes, and starts only wh
   assert.match((await runTool("deploy", { app: "demo" }, ctx, yes)).content, /a route, or builds and a channel/);
   assert.match((await runTool("deploy", { app: "demo", route: "nope" }, ctx, yes)).content, /no deploy route "nope"/);
   assert.equal(isAction("list_deployments"), false);
+  await runTool("deploy", { app: "demo", route: "qa", post: "as-built" }, ctx, async (a) => ((asked = a), false));
+  assert.ok(asked?.details.includes("Posts the notes with the first build to finish; each later one replies in their thread"));
+  assert.ok(!asked?.details.includes("Posts once every build has built; nothing is posted if one fails"));
 });
