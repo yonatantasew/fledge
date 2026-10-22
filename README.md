@@ -46,7 +46,7 @@ cached, so a new release shows up on the next reload.
 **Optional:**
 - **Installing on devices:** Xcode (`xcrun devicectl`) and the Android SDK (`adb`).
 - **Releases:** `gh`, plus `acli` for Jira and an assistant model for drafting notes.
-- **Shipping:** a Slack app's bot token (see [Shipping to Slack](#shipping-to-slack)).
+- **Shipping and deploying:** a Slack app's bot token (see [Shipping to Slack](#shipping-to-slack)).
 - **The Firebase sign-in badge:** `firebase`.
 - **The assistant:** a model: the `claude` CLI login, an API key, or a local
   model through Ollama or LM Studio.
@@ -321,6 +321,55 @@ note) is dropped. A channel can also be given by id (`C0123ABCD`).
 On Slack's free plan, files count toward the workspace's 5 GB, only the last
 90 days are visible, and files older than a year are deleted, so older builds
 drop out of the channel over time. The artifacts stay in `build/fledge/`.
+
+## Deploying
+
+**Deploy** (next to Queue) builds and announces in one go. Once every build
+has built, one Slack message goes out with notes and all the files. If a
+build fails or is stopped, nothing is posted.
+
+1. Pick a **route** from the app's config, or **Deploy what's selected** with
+   the form's builds and a channel.
+2. The dialog gathers the **notes**: what changed since the route's last
+   deploy (or, the first time, since the last release). That's the PRs merged
+   since then, each with its tickets and DRI, as in the release channel note.
+   Without a release setup, it's the commit subjects. Edit them freely; Prod
+   builds ask you to tick a box.
+3. **Build and deploy.** A strip above the builds follows it: building,
+   posting (with upload progress), then posted. Its builds carry its name.
+
+A deployment whose build failed is **held**. Resume the build (↻) and it
+carries on, **Post what built** sends the rest with a "Not built" line, or
+**Cancel** stops it. If Slack refuses the post, it's marked failed with the
+reason and can be posted again. Files stream from disk, so a 600 MB APK
+never sits in memory, and one message holds at most 10 files.
+
+Routes go in the app's config:
+
+```json
+"deploy": {
+  "routes": [
+    {
+      "id": "qa",
+      "label": "QA: staging",
+      "builds": [
+        { "platform": "android", "environment": "staging", "mode": "release" },
+        { "platform": "ios", "environment": "staging", "mode": "release" }
+      ],
+      "options": { "androidOutput": "apk", "iosOutput": "ipa", "exportMethod": "ad-hoc", "splitDebugInfo": true },
+      "to": { "slack": "#qa-builds" }
+    }
+  ]
+}
+```
+
+`options` takes `androidOutput` (`apk`, `appbundle`), `iosOutput` (`ipa`,
+`app`), `exportMethod`, `splitDebugInfo`, `obfuscate`, `arm64Only` and
+`toggles` (switch ids). Each route counts its own deploys for "since the
+last deploy"; one-offs count deploys to the same channel and environments.
+The history is `~/.config/fledge/deployments.json`. It needs the Slack app
+from [Shipping to Slack](#shipping-to-slack). The assistant can deploy too
+(`deploy`, after you approve its card) and list deployments.
 
 ## Releases
 
