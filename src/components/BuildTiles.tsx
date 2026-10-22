@@ -22,7 +22,7 @@ import { cn } from "@/lib/utils";
 import { useFlavorLabel } from "@/project";
 import { MODE_LABEL, PLATFORM_ICON } from "./BuildForm";
 import { ARM64_ONLY, BuildActions, installText, shortPath, STATUS } from "./build-status";
-import { BuildFolder } from "./BuildFiles";
+import { FileBrowser } from "./BuildFiles";
 
 const ORDER: JobStatus[] = ["running", "queued", "succeeded", "failed", "cancelled"];
 
@@ -33,7 +33,7 @@ const LAYOUTS: { id: Layout; label: string; icon: IconSvgElement }[] = [
   { id: "grid", label: "Grid", icon: GridViewIcon },
   { id: "list", label: "List", icon: ListViewIcon },
   { id: "columns", label: "Columns: one per group (statuses when not grouped)", icon: LayoutThreeColumnIcon },
-  { id: "files", label: "Files: each build's folder, with its subfolders and files", icon: FolderTreeIcon },
+  { id: "files", label: "Files: each build's folder in columns, like Finder", icon: FolderTreeIcon },
 ];
 
 function stored<T extends string>(key: string, allowed: readonly T[], fallback: T): T {
@@ -59,7 +59,7 @@ function ago(t: number, now: number) {
 /**
  * The builds, Argo CD style, in four layouts: a grid of tiles (facts in rows,
  * actions along the bottom), a dense list, a board of columns (one per group),
- * or their folders, opening into subfolders and files.
+ * or their folders in Finder-style columns.
  * Each has the status as a coloured edge; filter, grouping and layout persist.
  */
 export function BuildTiles({ jobs, onSelect, showProject = false }: { jobs: Job[]; onSelect: (id: string) => void; showProject?: boolean }) {
@@ -158,7 +158,11 @@ export function BuildTiles({ jobs, onSelect, showProject = false }: { jobs: Job[
         </div>
       )}
 
-      {layout === "columns" ? (
+      {layout === "files" ? (
+        <CardContent className="flex min-h-0 flex-1 flex-col px-3 pb-1">
+          <FileBrowser groups={groups} grouped={groupBy !== "none"} flavorLabel={flavorLabel} onSelect={onSelect} />
+        </CardContent>
+      ) : layout === "columns" ? (
         // A board: the groups side by side, each a column of compact cards.
         <CardContent className="flex min-h-0 flex-1 gap-3 overflow-x-auto px-3 pb-1">
           {groups.map((g) => (
@@ -194,15 +198,7 @@ export function BuildTiles({ jobs, onSelect, showProject = false }: { jobs: Job[
                 />
               )}
               {!collapsed.has(g.key) &&
-                (layout === "files" ? (
-                  <ul className="divide-y overflow-hidden rounded-lg border">
-                    {g.builds.map((j) => (
-                      <li key={j.id}>
-                        <BuildFolder job={j} flavorLabel={flavorLabel} onSelect={onSelect} />
-                      </li>
-                    ))}
-                  </ul>
-                ) : layout === "list" ? (
+                (layout === "list" ? (
                   <ul className="divide-y rounded-lg border">
                     {g.builds.map((j) => (
                       <li key={j.id}>
