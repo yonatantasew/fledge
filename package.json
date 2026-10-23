@@ -3,6 +3,7 @@
   "version": "0.12.1",
   "private": true,
   "type": "module",
+  "license": "MIT",
   "description": "Build, install and release Flutter apps from a local web UI: flavors × build types for Android and iOS, device installs, and release notes drafted with Claude.",
   "bin": {
     "fledge": "bin/fledge.js"
@@ -12,7 +13,8 @@
     "dist",
     "dist-server",
     "fledge.example.json",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "dev": "node --watch server/index.ts --dev",
