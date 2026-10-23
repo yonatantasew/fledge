@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
-import { releasesSeen, suggestNext, versionHistory, withVersion, type SeenVersion } from "./versions.ts";
+import { commitPubspecVersion, releasesSeen, suggestNext, versionHistory, withVersion, type SeenVersion } from "./versions.ts";
 
 const seen = (version: string, from: SeenVersion["from"] = "build"): SeenVersion => ({ version, from, label: `${from} ${version}` });
 
@@ -47,4 +48,34 @@ test("the history is kept per app, in order", async () => {
   await h.add("other", record("2.0.0+1"));
   assert.deepEqual((await versionHistory(dir).list("demo")).map((r) => r.version), ["1.3.1+57", "1.3.1+58"]);
   assert.deepEqual(await h.list("none"), []);
+});
+
+test("writing the version commits pubspec.yaml alone; edits, no-ops and refused commits are handled", async () => {
+  const repo = path.join(dir, "app");
+  const git = (...a: string[]) => execFileSync("git", ["-C", repo, ...a], { encoding: "utf8" }).trim();
+  execFileSync("git", ["init", "-q", repo]);
+  git("config", "user.email", "t@example.com");
+  git("config", "user.name", "t");
+  writeFileSync(path.join(repo, "pubspec.yaml"), "name: app\nversion: 1.2.16+56\n");
+  writeFileSync(path.join(repo, "notes.txt"), "a");
+  git("add", ".");
+  git("commit", "-qm", "init");
+  writeFileSync(path.join(repo, "notes.txt"), "an uncommitted edit elsewhere");
+
+  const r = await commitPubspecVersion(repo, "1.3.1", "57");
+  assert.equal(r.version, "1.3.1+57");
+  assert.equal(git("log", "-1", "--format=%s"), "Set the version to 1.3.1+57");
+  assert.equal(git("show", "--name-only", "--format=", "HEAD"), "pubspec.yaml", "only pubspec");
+  assert.match(git("status", "--porcelain"), /notes\.txt/, "the other edit stays uncommitted");
+  assert.equal((await commitPubspecVersion(repo, "", "57")).commit, undefined, "already says so: no commit");
+
+  writeFileSync(path.join(repo, "pubspec.yaml"), "name: app\nversion: 1.3.1+57\ndescription: edited\n");
+  await assert.rejects(commitPubspecVersion(repo, "1.3.1", "58"), /uncommitted changes/);
+  git("checkout", "--", "pubspec.yaml");
+
+  writeFileSync(path.join(repo, ".git", "hooks", "commit-msg"), "#!/bin/sh\necho 'message must name a ticket' >&2\nexit 1\n");
+  chmodSync(path.join(repo, ".git", "hooks", "commit-msg"), 0o755);
+  await assert.rejects(commitPubspecVersion(repo, "1.3.1", "58"), /git refused the version commit: message must name a ticket/);
+  assert.match(readFileSync(path.join(repo, "pubspec.yaml"), "utf8"), /version: 1\.3\.1\+57/, "put back");
+  assert.equal(git("status", "--porcelain", "--", "pubspec.yaml"), "");
 });

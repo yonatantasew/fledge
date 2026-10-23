@@ -24,6 +24,7 @@ import { bumpValues, templateDeploy, templateGithub, templateSlack, type Release
 import { changesBetween, connections, gatherFacts, notesRequest, publish, releases, validatePublish } from "./release.ts";
 import { Deployer, deployKey, type Deployment } from "./deploy.ts";
 import { choiceStore, setRoutePost } from "./choices.ts";
+import { commitPubspecVersion, releasesSeen, suggestNext, versionHistory, type SeenVersion } from "./versions.ts";
 import { answerApproval, getConversation, listConversations, newConversation, pendingApprovals, send as sendToAssistant } from "./ai/agent.ts";
 import { availableModels, connectorFor, listProviders, removeProvider, saveProvider, setActive } from "./ai/providers.ts";
 import { MCP_CONVERSATION, mcpServer } from "./ai/mcp.ts";
@@ -927,6 +928,77 @@ async function runShip(job: Job, plan: { channel: string; text: string; file: { 
   }
 }
 
+// ------------------------------------------------------------------ versions
+
+// Which version each queue builds as. The build number only goes up, across
+// version names (versions.ts); each queue or deploy shares one version.
+const versionLog = versionHistory(FLEDGE_HOME);
+let versionLock: Promise<unknown> = Promise.resolve();
+/** One version picked at a time, so two queues at once can't take the same number. */
+function underVersionLock<T>(fn: () => Promise<T>): Promise<T> {
+  const turn = versionLock.then(fn, fn);
+  versionLock = turn.catch(() => {});
+  return turn;
+}
+
+const day = (t: number) => new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+
+/** Every version seen for an app: release tags, what fledge built, and pubspec in the checkout and on the base branch. */
+async function versionsSeen(project: Project, checkout: string): Promise<SeenVersion[]> {
+  const seen: SeenVersion[] = [];
+  const tags = await run("git", ["-C", project.root, "for-each-ref", "--format=%(refname:short)\t%(creatordate:unix)", "refs/tags/v*"]).then(
+    (r) => r.stdout.trim().split("\n").filter(Boolean).map((l) => ({ tag: l.split("\t")[0], at: Number(l.split("\t")[1]) * 1000 })),
+    () => [],
+  );
+  seen.push(...releasesSeen(tags).map((s) => ({ ...s, label: `${s.label}${s.at ? `, ${day(s.at)}` : ""}` })));
+  for (const r of await versionLog.list(project.id)) seen.push({ version: r.version, from: "build", label: `built ${day(r.at)} on ${r.branch}`, at: r.at });
+  for (const j of jobs.filter((x) => x.project === project.id)) {
+    const v = j.verified?.version ?? j.version;
+    if (v) seen.push({ version: v, from: "build", label: `built ${day(j.createdAt)} on ${j.branch}`, at: j.createdAt });
+  }
+  const pub = (text: string) => /^version:\s*(\S+)/m.exec(text)?.[1];
+  const here = pub(await readFile(path.join(checkout, "pubspec.yaml"), "utf8").catch(() => ""));
+  if (here) seen.push({ version: here, from: "pubspec", label: "pubspec in this checkout" });
+  const base = project.config?.release?.github.baseBranch ?? "main";
+  const there = pub(await run("git", ["-C", project.root, "show", `origin/${base}:pubspec.yaml`]).then((r) => r.stdout, () => ""));
+  if (there) seen.push({ version: there, from: "pubspec", label: `pubspec on origin/${base}` });
+  return seen;
+}
+
+async function nextVersionFor(project: Project, checkout: string) {
+  return suggestNext(await versionsSeen(project, checkout), project.config!.versions.basedOn);
+}
+
+/**
+ * The version a queue builds as: the next one (auto), what was typed, or
+ * pubspec's. With writePubspec, an auto or typed version is also written to
+ * pubspec.yaml and committed (that file only) before the builds are planned.
+ */
+type PickedVersion = { buildName: string; buildNumber: string; how: "auto" | "typed" | "pubspec"; pubspecCommit?: string };
+
+async function pickVersion(project: Project, checkout: string, o: { auto: boolean; writePubspec: boolean; buildName: string; buildNumber: string }): Promise<PickedVersion> {
+  let { buildName, buildNumber } = o;
+  let how: "auto" | "typed" | "pubspec" = buildName || buildNumber ? "typed" : "pubspec";
+  if (o.auto) {
+    const n = await nextVersionFor(project, checkout);
+    ({ name: buildName, number: buildNumber } = n);
+    how = "auto";
+  }
+  // Hooks run as for any commit; a refused commit leaves pubspec as it was.
+  const pubspecCommit = o.writePubspec && how !== "pubspec" ? (await commitPubspecVersion(checkout, buildName, buildNumber)).commit : undefined;
+  return { buildName, buildNumber, how, pubspecCommit };
+}
+
+/** Remembers which builds a version went into. */
+async function recordVersion(project: Project, p: { version: string; checkout: { branch: string; sha: string } }, queued: Job[], how: "auto" | "typed" | "pubspec", pubspecCommit?: string, deployment?: string) {
+  await versionLog
+    .add(project.id, {
+      version: p.version, at: Date.now(), branch: p.checkout.branch, sha: p.checkout.sha, how, pubspecCommit, deployment,
+      builds: queued.map((j) => ({ id: j.id, environment: j.flavor, platform: j.platform, artifact: j.artifact })),
+    })
+    .catch(() => {});
+}
+
 // ---------------------------------------------------------------- deployments
 
 // Builds that are posted together, with notes, once all have built (deploy.ts).
@@ -977,7 +1049,7 @@ deployer = deployments;
 const choices = choiceStore(FLEDGE_HOME);
 
 /** A deploy request: a route of the app's, or the builds and channel picked by hand. */
-async function deployRequest(b: Record<string, unknown>) {
+async function deployRequest(b: Record<string, unknown>, start = false) {
   const project = await getProject(b.project);
   if (!project?.config) return { error: "unknown app, or its config doesn't load" };
   let label = "Deploy";
@@ -1002,6 +1074,20 @@ async function deployRequest(b: Record<string, unknown>) {
     targets = b.targets;
     options = b.options;
   }
+  // Auto version: the preview shows the next one; starting picks it for real (and may write pubspec).
+  const checkoutPath = await resolveCheckout(project, b.checkout);
+  if (!checkoutPath) return { error: "that checkout isn't one of this app's" };
+  let version: PickedVersion = { buildName: "", buildNumber: "", how: "pubspec" };
+  if (b.autoVersion === true) {
+    try {
+      version = start
+        ? await pickVersion(project, checkoutPath, { auto: true, writePubspec: b.writePubspec === true, buildName: "", buildNumber: "" })
+        : { ...(await nextVersionFor(project, checkoutPath).then((n) => ({ buildName: n.name, buildNumber: n.number }))), how: "auto" };
+    } catch (e) {
+      return { error: (e as Error).message };
+    }
+    options = { ...(options as Record<string, unknown>), buildName: version.buildName, buildNumber: version.buildNumber };
+  }
   const p = await plan({ project: project.id, checkout: b.checkout, targets, options });
   if ("error" in p) return { error: String(p.error) };
   if (!p.builds.length) return { error: `nothing can be built: ${p.skipped.map((x) => x.reason).join("; ")}` };
@@ -1011,7 +1097,7 @@ async function deployRequest(b: Record<string, unknown>) {
   // How it posts: the route's choice, unless this deploy picks another.
   if (b.post === "together" || b.post === "as-built") mode = b.post;
   if (b.onFailure === "hold" || b.onFailure === "post-built") onFailure = b.onFailure;
-  return { project, route: route?.id ?? null, label, channel, plan: p, head, key, mode, onFailure };
+  return { project, route: route?.id ?? null, label, channel, plan: p, head, key, mode, onFailure, version };
 }
 
 /** Queues a deploy's builds and starts waiting for them. */
@@ -1019,6 +1105,7 @@ function startDeploy(r: Exclude<Awaited<ReturnType<typeof deployRequest>>, { err
   const id = `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   const queued = enqueue(r.plan);
   for (const j of queued) j.deployment = id;
+  void recordVersion(r.project, r.plan, queued, r.version.how, r.version.pubspecCommit, id);
   deployments.add({
     id, project: r.project.id, route: r.route, key: r.key, label: r.label, channel: r.channel,
     checkout: r.plan.checkout.path, branch: r.plan.checkout.branch, sha: r.head,
@@ -1335,12 +1422,16 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
     const b = (await readJson(req, 256 << 10)) as Record<string, unknown>;
     if (typeof b.notes !== "string" || !b.notes.trim()) return send(res, 400, { error: "the notes are empty" });
     if (b.notes.length > 30_000) return send(res, 400, { error: "the notes are too long for one Slack message" });
-    const r = await deployRequest(b);
-    if ("error" in r) return send(res, 400, r);
     // The note line is kept apart so it can be offered again next time.
     const note = typeof b.note === "string" ? b.note.trim().slice(0, 2000) : "";
-    const started = startDeploy(r, note ? `${b.notes.trim()}\n\n${note}` : b.notes);
-    await choices.set(r.project.id, r.route, { post: r.mode, onFailure: r.onFailure, channel: r.route ? undefined : r.channel, note }).catch(() => {});
+    const r = await underVersionLock(async () => {
+      const req = await deployRequest(b, true);
+      if (req.error !== undefined) return { error: req.error };
+      return { req, started: startDeploy(req, note ? `${String(b.notes).trim()}\n\n${note}` : String(b.notes)) };
+    });
+    if ("error" in r) return send(res, 400, r);
+    const { req: dr, started } = r;
+    await choices.set(dr.project.id, dr.route, { post: dr.mode, onFailure: dr.onFailure, channel: dr.route ? undefined : dr.channel, note }).catch(() => {});
     return send(res, 200, started);
   }
   const deployRoute = /^\/api\/deployments\/([a-z0-9]+)\/(post|cancel)$/.exec(url.pathname);
@@ -1357,10 +1448,37 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
   if (req.method === "POST" && url.pathname === "/api/plan") return send(res, 200, await plan(await readJson(req)));
 
   if (req.method === "POST" && url.pathname === "/api/jobs") {
-    const p = await plan(await readJson(req));
-    if ("error" in p) return send(res, 400, p);
-    enqueue(p);
-    return send(res, 200, { queued: p.builds.length, skipped: p.skipped });
+    const b = (await readJson(req)) as Record<string, unknown>;
+    const project = await getProject(b.project);
+    const checkout = project && (await resolveCheckout(project, b.checkout));
+    if (!project?.config || !checkout) return send(res, 400, { error: "unknown app or checkout" });
+    const o = (b.options ?? {}) as Record<string, unknown>;
+    const r = await underVersionLock(async () => {
+      const v = await pickVersion(project, checkout, {
+        auto: b.autoVersion === true,
+        writePubspec: b.writePubspec === true,
+        buildName: typeof o.buildName === "string" ? o.buildName.trim() : "",
+        buildNumber: typeof o.buildNumber === "string" ? o.buildNumber.trim() : "",
+      });
+      const p = await plan({ ...b, options: { ...o, buildName: v.buildName, buildNumber: v.buildNumber } });
+      if ("error" in p) return p;
+      const queued = enqueue(p);
+      await recordVersion(project, p, queued, v.how, v.pubspecCommit);
+      return { queued: p.builds.length, skipped: p.skipped, version: p.version, pubspecCommit: v.pubspecCommit };
+    }).catch((e: Error) => ({ error: e.message }));
+    return send(res, "error" in r ? 400 : 200, r);
+  }
+
+  // What the next version would be, what it follows, and what was built as which.
+  if (req.method === "GET" && url.pathname === "/api/versions") {
+    const project = await getProject(url.searchParams.get("project"));
+    const checkout = project && (await resolveCheckout(project, url.searchParams.get("checkout") ?? undefined));
+    if (!project?.config || !checkout) return send(res, 404, { error: "unknown app or checkout" });
+    return send(res, 200, {
+      next: await nextVersionFor(project, checkout),
+      settings: project.config.versions,
+      history: (await versionLog.list(project.id)).slice(-100).reverse(),
+    });
   }
 
   if (req.method === "POST" && url.pathname === "/api/jobs/stop") {

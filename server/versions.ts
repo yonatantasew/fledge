@@ -4,8 +4,12 @@
 // version names, so a newer build always installs over an older one; the
 // name is the highest seen unless someone types a new one.
 
+import { execFile } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
+
+const run = promisify(execFile);
 
 export const VERSION = /^(\d+)\.(\d+)\.(\d+)\+(\d+)$/;
 
@@ -91,4 +95,33 @@ export function versionHistory(home: string) {
 /** A pubspec.yaml with its version line set; null when there's no version line. */
 export function withVersion(pubspec: string, version: string) {
   return /^version:\s*\S+/m.test(pubspec) ? pubspec.replace(/^version:\s*\S+/m, `version: ${version}`) : null;
+}
+
+/**
+ * Writes a version into the checkout's pubspec.yaml and commits that file
+ * alone ("Set the version to …"), with the repository's hooks. Empty name or
+ * number: pubspec's. Refuses a pubspec with uncommitted edits; if git refuses
+ * the commit, pubspec is put back. Returns the commit, or undefined when
+ * pubspec already said so.
+ */
+export async function commitPubspecVersion(checkout: string, buildName: string, buildNumber: string) {
+  const file = path.join(checkout, "pubspec.yaml");
+  const text = await readFile(file, "utf8");
+  const [pubName, pubNumber = ""] = (/^version:\s*(\S+)/m.exec(text)?.[1] ?? "").split("+");
+  const version = `${buildName || pubName}+${buildNumber || pubNumber}`;
+  if ((await run("git", ["-C", checkout, "status", "--porcelain", "--", "pubspec.yaml"])).stdout.trim()) {
+    throw new Error("pubspec.yaml has uncommitted changes; commit or undo them, or turn off writing the version to pubspec");
+  }
+  const updated = withVersion(text, version);
+  if (!updated) throw new Error("pubspec.yaml has no version line to write");
+  if (updated === text) return { version, commit: undefined };
+  await writeFile(file, updated);
+  try {
+    await run("git", ["-C", checkout, "commit", "--quiet", "-m", `Set the version to ${version}`, "--", "pubspec.yaml"]);
+  } catch (e) {
+    await writeFile(file, text);
+    const why = ((e as { stderr?: string }).stderr || (e as Error).message).trim().split("\n").slice(-1)[0];
+    throw new Error(`git refused the version commit: ${why}`);
+  }
+  return { version, commit: (await run("git", ["-C", checkout, "rev-parse", "HEAD"])).stdout.trim() };
 }
