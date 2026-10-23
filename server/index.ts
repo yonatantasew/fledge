@@ -1475,7 +1475,9 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
   // What the next version would be, what it follows, and what was built as which.
   if (req.method === "GET" && url.pathname === "/api/versions") {
     const project = await getProject(url.searchParams.get("project"));
-    const checkout = project && (await resolveCheckout(project, url.searchParams.get("checkout") ?? undefined));
+    const asked = url.searchParams.get("checkout");
+    // No checkout given: the app's main one.
+    const checkout = project && (asked ? await resolveCheckout(project, asked) : project.root);
     if (!project?.config || !checkout) return send(res, 404, { error: "unknown app or checkout" });
     return send(res, 200, {
       next: await nextVersionFor(project, checkout),
