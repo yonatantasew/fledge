@@ -10,7 +10,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, versionsApi, type BuildOptions, type Checkout, type DeployWhat, type Flavor, type Mode, type PlanResult, type Platform, type VersionsInfo } from "@/api";
+import { api, versionsApi, type BuildOptions, type Checkout, type DeployWhat, type Flavor, type Mode, type NextVersion, type PlanResult, type Platform, type VersionsInfo } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -168,14 +168,36 @@ export function BuildForm({ projectId, checkout }: { projectId: string; checkout
     filled.current = versions.next.version;
     setOptions({ buildName: versions.next.name, buildNumber: versions.next.number });
   }, [versions, autoVersion]);
+  // Prod (the environments that ask for confirmation) has its own version: usually another app ID.
+  const isProd = (f: string) => !!project.flavors.find((p) => p.name === f)?.confirm;
+  const prodPicked = flavors.some(isProd);
+  const mainPicked = flavors.some((f) => !isProd(f));
+  const [prodVersion, setProdVersion] = useState({ buildName: "", buildNumber: "" });
+  const filledProd = useRef<string | null>(null);
+  useEffect(() => {
+    const n = versions?.nextProd;
+    if (!n || autoVersion || filledProd.current === n.version) return;
+    filledProd.current = n.version;
+    setProdVersion({ buildName: n.name, buildNumber: n.number });
+  }, [versions, autoVersion]);
+  const prodLabel = project.flavors.filter((f) => f.confirm).map((f) => f.label).join(", ") || "Prod";
+  const mainLabel = flavors.filter((f) => !isProd(f)).map(flavorLabel).join(", ");
 
   const request = useMemo(
     () =>
       checkout && targets.length
-        ? { project: projectId, checkout: checkout.path, targets, options: { ...options, toggles: toggleIds }, autoVersion, writePubspec }
+        ? {
+            project: projectId,
+            checkout: checkout.path,
+            targets,
+            options: { ...options, toggles: toggleIds },
+            autoVersion,
+            writePubspec,
+            ...(prodPicked ? { prodVersion } : {}),
+          }
         : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [projectId, checkout, targets, options, toggleIds.join(","), autoVersion, writePubspec],
+    [projectId, checkout, targets, options, toggleIds.join(","), autoVersion, writePubspec, prodPicked, prodVersion],
   );
 
   useEffect(() => {
@@ -428,49 +450,23 @@ export function BuildForm({ projectId, checkout }: { projectId: string; checkout
 
         <Section title="Version" hint="The build number only ever goes up, across version names, so a newer build always installs over an older one. Empty fields: pubspec.yaml's.">
           {autoVersion ? (
-            <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
-              Next: <span className="font-mono font-medium">{versions?.next.version ?? "…"}</span>
-              <span className="block text-xs text-muted-foreground">
-                Taken when you queue{versions?.next.after ? `, after ${versions.next.after.version} (${versions.next.after.label})` : ""}.
-              </span>
-            </p>
+            <div className="space-y-1.5">
+              {(mainPicked || !prodPicked) && <NextLine label={prodPicked ? mainLabel : null} next={versions?.next} />}
+              {prodPicked && versions?.nextProd && <NextLine label={prodLabel} next={versions.nextProd} />}
+            </div>
           ) : (
             <>
-              <div className="grid grid-cols-[1fr_7rem] gap-2">
-                <Input
-                  placeholder={checkout ? checkout.version.split("+")[0] : "1.3.1"}
-                  value={options.buildName}
-                  onChange={(e) => setOptions({ buildName: e.target.value })}
-                  aria-label="Build name"
-                  className="font-mono"
+              {(mainPicked || !prodPicked) && (
+                <VersionRow
+                  label={prodPicked ? mainLabel : null}
+                  value={{ buildName: options.buildName, buildNumber: options.buildNumber }}
+                  onChange={(v) => setOptions(v)}
+                  next={versions?.next}
+                  pubspec={checkout?.version ?? ""}
                 />
-                <Input
-                  placeholder={checkout ? `+${checkout.version.split("+")[1] ?? ""}` : "+1"}
-                  value={options.buildNumber}
-                  onChange={(e) => setOptions({ buildNumber: e.target.value.replace(/^\+/, "") })}
-                  aria-label="Build number"
-                  className="font-mono"
-                  inputMode="numeric"
-                />
-              </div>
-              {versions && (
-                <p className="text-xs text-muted-foreground">
-                  {`${options.buildName}+${options.buildNumber}` === versions.next.version
-                    ? `The next version${versions.next.after ? `, after ${versions.next.after.version} (${versions.next.after.label})` : ""}.`
-                    : !options.buildName && !options.buildNumber
-                      ? `pubspec's, ${checkout?.version ?? ""}.`
-                      : `Typed in; the next would be ${versions.next.version}.`}{" "}
-                  {`${options.buildName}+${options.buildNumber}` !== versions.next.version && (
-                    <button type="button" className="underline underline-offset-2 hover:text-foreground" onClick={() => setOptions({ buildName: versions.next.name, buildNumber: versions.next.number })}>
-                      Use {versions.next.version}
-                    </button>
-                  )}{" "}
-                  {(options.buildName || options.buildNumber) && (
-                    <button type="button" className="underline underline-offset-2 hover:text-foreground" onClick={() => setOptions({ buildName: "", buildNumber: "" })}>
-                      Use pubspec's
-                    </button>
-                  )}
-                </p>
+              )}
+              {prodPicked && versions?.nextProd && (
+                <VersionRow label={prodLabel} value={prodVersion} onChange={setProdVersion} next={versions.nextProd} pubspec={checkout?.version ?? ""} />
               )}
             </>
           )}
@@ -484,7 +480,7 @@ export function BuildForm({ projectId, checkout }: { projectId: string; checkout
           <OptionRow
             id="write-pubspec"
             label="Write it to pubspec.yaml"
-            hint="Commits pubspec.yaml alone (“Set the version to …”) on this checkout's branch before building. Local; not pushed."
+            hint={`Commits pubspec.yaml alone (“Set the version to …”) on this checkout's branch before building. Local; not pushed.${prodPicked && mainPicked ? ` pubspec holds one: ${mainLabel}'s.` : ""}`}
             checked={writePubspec}
             disabled={!autoVersion && !options.buildName && !options.buildNumber}
             onChange={(v) => setForm((f) => ({ ...f, writePubspec: v }))}
@@ -557,6 +553,76 @@ export function BuildForm({ projectId, checkout }: { projectId: string; checkout
         {message && <p className="text-center text-xs text-muted-foreground">{message}</p>}
       </CardFooter>
     </Card>
+  );
+}
+
+
+/** "Next: 1.3.1+57", what it follows, for auto-increment. */
+function NextLine({ label, next }: { label: string | null; next: NextVersion | undefined }) {
+  return (
+    <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
+      {label && <span className="mr-1.5 text-xs font-medium text-muted-foreground">{label}</span>}
+      Next: <span className="font-mono font-medium">{next?.version ?? "…"}</span>
+      <span className="block text-xs text-muted-foreground">Taken when you queue{next?.after ? `, after ${next.after.version} (${next.after.label})` : ""}.</span>
+    </p>
+  );
+}
+
+/** One track's version fields, filled with its next version, saying where the value comes from. */
+function VersionRow({
+  label,
+  value,
+  onChange,
+  next,
+  pubspec,
+}: {
+  label: string | null;
+  value: { buildName: string; buildNumber: string };
+  onChange: (v: { buildName: string; buildNumber: string }) => void;
+  next: NextVersion | undefined;
+  pubspec: string;
+}) {
+  const current = `${value.buildName}+${value.buildNumber}`;
+  return (
+    <div className="space-y-1">
+      {label && <p className="text-xs font-medium text-muted-foreground">{label}</p>}
+      <div className="grid grid-cols-[1fr_7rem] gap-2">
+        <Input
+          placeholder={pubspec.split("+")[0] || "1.3.1"}
+          value={value.buildName}
+          onChange={(e) => onChange({ ...value, buildName: e.target.value })}
+          aria-label={label ? `${label} build name` : "Build name"}
+          className="font-mono"
+        />
+        <Input
+          placeholder={`+${pubspec.split("+")[1] ?? ""}`}
+          value={value.buildNumber}
+          onChange={(e) => onChange({ ...value, buildNumber: e.target.value.replace(/^\+/, "") })}
+          aria-label={label ? `${label} build number` : "Build number"}
+          className="font-mono"
+          inputMode="numeric"
+        />
+      </div>
+      {next && (
+        <p className="text-xs text-muted-foreground">
+          {current === next.version
+            ? `The next version${next.after ? `, after ${next.after.version} (${next.after.label})` : ""}.`
+            : !value.buildName && !value.buildNumber
+              ? `pubspec's, ${pubspec}.`
+              : `Typed in; the next would be ${next.version}.`}{" "}
+          {current !== next.version && (
+            <button type="button" className="underline underline-offset-2 hover:text-foreground" onClick={() => onChange({ buildName: next.name, buildNumber: next.number })}>
+              Use {next.version}
+            </button>
+          )}{" "}
+          {(value.buildName || value.buildNumber) && (
+            <button type="button" className="underline underline-offset-2 hover:text-foreground" onClick={() => onChange({ buildName: "", buildNumber: "" })}>
+              Use pubspec's
+            </button>
+          )}
+        </p>
+      )}
+    </div>
   );
 }
 

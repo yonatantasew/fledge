@@ -102,6 +102,7 @@ export interface BuildRequest {
   options: BuildOptions;
   autoVersion?: boolean; // take the next version when queued
   writePubspec?: boolean; // and write it to pubspec.yaml (committed)
+  prodVersion?: { buildName: string; buildNumber: string }; // Prod's own version (its track), when Prod is queued too
 }
 
 async function post<T>(url: string, body: unknown = {}): Promise<T> {
@@ -630,8 +631,16 @@ export interface VersionRecord {
   deployment?: string;
 }
 
+export interface NextVersion {
+  version: string;
+  name: string;
+  number: string;
+  after: SeenVersion | null;
+}
+
 export interface VersionsInfo {
-  next: { version: string; name: string; number: string; after: SeenVersion | null };
+  next: NextVersion;
+  nextProd: NextVersion | null; // Prod's own track, when the app has environments that ask for confirmation
   settings: { basedOn: "highest" | "releases"; autoIncrement: boolean; writePubspec: boolean };
   history: VersionRecord[]; // newest first
 }
