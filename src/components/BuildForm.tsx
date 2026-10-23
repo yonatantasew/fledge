@@ -9,8 +9,8 @@ import {
   RocketIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { useEffect, useMemo, useState } from "react";
-import { api, type BuildOptions, type Checkout, type DeployWhat, type Flavor, type Mode, type PlanResult, type Platform } from "@/api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { api, versionsApi, type BuildOptions, type Checkout, type DeployWhat, type Flavor, type Mode, type PlanResult, type Platform, type VersionsInfo } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,6 +24,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { cn } from "@/lib/utils";
 import { useFlavorLabel, useProject } from "@/project";
 import { DeployDialog } from "./DeployDialog";
+import { VersionsDialog } from "./VersionsDialog";
 
 const MODE_LABEL: Record<Mode, string> = { debug: "Debug", profile: "Profile", release: "Release" };
 export const PLATFORM_ICON: Record<Platform, IconSvgElement> = { android: AndroidIcon, ios: AppleIcon };
@@ -34,6 +35,8 @@ interface FormState {
   flavors: Flavor[];
   modes: Mode[];
   options: BuildOptions;
+  autoVersion?: boolean; // unset: the app config's versions.autoIncrement
+  writePubspec?: boolean; // unset: versions.writePubspec
 }
 
 const DEFAULTS: FormState = {
@@ -151,10 +154,28 @@ export function BuildForm({ projectId, checkout }: { projectId: string; checkout
     [platforms, flavors, modes],
   );
 
+  // Versions: what's next and what was built, for the fields and the history.
+  const [versions, setVersions] = useState<VersionsInfo | null>(null);
+  const [showVersions, setShowVersions] = useState(false);
+  const loadVersions = () => checkout && void versionsApi.get(projectId, checkout.path).then(setVersions, () => setVersions(null));
+  useEffect(() => void loadVersions(), [projectId, checkout?.path]);
+  const autoVersion = form.autoVersion ?? versions?.settings.autoIncrement ?? false;
+  const writePubspec = form.writePubspec ?? versions?.settings.writePubspec ?? false;
+  // Fill in the next version once per suggestion; clearing the fields (pubspec's) sticks until the next one.
+  const filled = useRef<string | null>(null);
+  useEffect(() => {
+    if (!versions || autoVersion || filled.current === versions.next.version) return;
+    filled.current = versions.next.version;
+    setOptions({ buildName: versions.next.name, buildNumber: versions.next.number });
+  }, [versions, autoVersion]);
+
   const request = useMemo(
-    () => (checkout && targets.length ? { project: projectId, checkout: checkout.path, targets, options: { ...options, toggles: toggleIds } } : null),
+    () =>
+      checkout && targets.length
+        ? { project: projectId, checkout: checkout.path, targets, options: { ...options, toggles: toggleIds }, autoVersion, writePubspec }
+        : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [projectId, checkout, targets, options, toggleIds.join(",")],
+    [projectId, checkout, targets, options, toggleIds.join(","), autoVersion, writePubspec],
   );
 
   useEffect(() => {
@@ -189,8 +210,9 @@ export function BuildForm({ projectId, checkout }: { projectId: string; checkout
     setMessage(null);
     try {
       const r = await api.queue(request);
-      setMessage(`Queued ${r.queued} build${r.queued === 1 ? "" : "s"}.`);
+      setMessage(`Queued ${r.queued} build${r.queued === 1 ? "" : "s"} as ${r.version}${r.pubspecCommit ? `, committed to pubspec (${r.pubspecCommit.slice(0, 8)})` : ""}.`);
       setConfirmProd(false);
+      loadVersions(); // the next one moves on
     } catch (e) {
       setMessage(`Could not queue: ${(e as Error).message}`);
     } finally {
@@ -404,24 +426,73 @@ export function BuildForm({ projectId, checkout }: { projectId: string; checkout
           </div>
         </Section>
 
-        <Section title="Version" hint="Leave empty to use pubspec.yaml. Overrides apply to this queue only.">
-          <div className="grid grid-cols-[1fr_7rem] gap-2">
-            <Input
-              placeholder={checkout ? checkout.version.split("+")[0] : "1.3.1"}
-              value={options.buildName}
-              onChange={(e) => setOptions({ buildName: e.target.value })}
-              aria-label="Build name"
-              className="font-mono"
-            />
-            <Input
-              placeholder={checkout ? `+${checkout.version.split("+")[1] ?? ""}` : "+1"}
-              value={options.buildNumber}
-              onChange={(e) => setOptions({ buildNumber: e.target.value.replace(/^\+/, "") })}
-              aria-label="Build number"
-              className="font-mono"
-              inputMode="numeric"
-            />
-          </div>
+        <Section title="Version" hint="The build number only ever goes up, across version names, so a newer build always installs over an older one. Empty fields: pubspec.yaml's.">
+          {autoVersion ? (
+            <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
+              Next: <span className="font-mono font-medium">{versions?.next.version ?? "…"}</span>
+              <span className="block text-xs text-muted-foreground">
+                Taken when you queue{versions?.next.after ? `, after ${versions.next.after.version} (${versions.next.after.label})` : ""}.
+              </span>
+            </p>
+          ) : (
+            <>
+              <div className="grid grid-cols-[1fr_7rem] gap-2">
+                <Input
+                  placeholder={checkout ? checkout.version.split("+")[0] : "1.3.1"}
+                  value={options.buildName}
+                  onChange={(e) => setOptions({ buildName: e.target.value })}
+                  aria-label="Build name"
+                  className="font-mono"
+                />
+                <Input
+                  placeholder={checkout ? `+${checkout.version.split("+")[1] ?? ""}` : "+1"}
+                  value={options.buildNumber}
+                  onChange={(e) => setOptions({ buildNumber: e.target.value.replace(/^\+/, "") })}
+                  aria-label="Build number"
+                  className="font-mono"
+                  inputMode="numeric"
+                />
+              </div>
+              {versions && (
+                <p className="text-xs text-muted-foreground">
+                  {`${options.buildName}+${options.buildNumber}` === versions.next.version
+                    ? `The next version${versions.next.after ? `, after ${versions.next.after.version} (${versions.next.after.label})` : ""}.`
+                    : !options.buildName && !options.buildNumber
+                      ? `pubspec's, ${checkout?.version ?? ""}.`
+                      : `Typed in; the next would be ${versions.next.version}.`}{" "}
+                  {`${options.buildName}+${options.buildNumber}` !== versions.next.version && (
+                    <button type="button" className="underline underline-offset-2 hover:text-foreground" onClick={() => setOptions({ buildName: versions.next.name, buildNumber: versions.next.number })}>
+                      Use {versions.next.version}
+                    </button>
+                  )}{" "}
+                  {(options.buildName || options.buildNumber) && (
+                    <button type="button" className="underline underline-offset-2 hover:text-foreground" onClick={() => setOptions({ buildName: "", buildNumber: "" })}>
+                      Use pubspec's
+                    </button>
+                  )}
+                </p>
+              )}
+            </>
+          )}
+          <OptionRow
+            id="auto-version"
+            label="Auto-increment"
+            hint="Each queue or deploy takes the next version itself, so no two share a number."
+            checked={autoVersion}
+            onChange={(v) => setForm((f) => ({ ...f, autoVersion: v }))}
+          />
+          <OptionRow
+            id="write-pubspec"
+            label="Write it to pubspec.yaml"
+            hint="Commits pubspec.yaml alone (“Set the version to …”) on this checkout's branch before building. Local; not pushed."
+            checked={writePubspec}
+            disabled={!autoVersion && !options.buildName && !options.buildNumber}
+            onChange={(v) => setForm((f) => ({ ...f, writePubspec: v }))}
+          />
+          <Button variant="link" size="sm" className="h-auto justify-start px-0 text-xs" onClick={() => setShowVersions(true)}>
+            Versions built so far…
+          </Button>
+          <VersionsDialog open={showVersions} onOpenChange={setShowVersions} info={versions} />
         </Section>
 
         <Separator />
@@ -458,7 +529,7 @@ export function BuildForm({ projectId, checkout }: { projectId: string; checkout
             <DropdownMenuContent align="end" className="w-72">
               <DropdownMenuLabel className="text-xs text-muted-foreground">Build, then post the notes and files</DropdownMenuLabel>
               {project.deployRoutes.map((r) => (
-                <DropdownMenuItem key={r.id} onSelect={() => setDeploying({ project: projectId, checkout: checkout?.path, route: r.id })}>
+                <DropdownMenuItem key={r.id} onSelect={() => setDeploying({ project: projectId, checkout: checkout?.path, route: r.id, autoVersion, writePubspec })}>
                   <div className="min-w-0">
                     <div className="font-medium">{r.label}</div>
                     <div className="truncate text-xs text-muted-foreground">
@@ -471,7 +542,7 @@ export function BuildForm({ projectId, checkout }: { projectId: string; checkout
                 <p className="px-2 py-1.5 text-xs text-muted-foreground">No routes yet: add them under "deploy" in this app's config.</p>
               )}
               <DropdownMenuSeparator />
-              <DropdownMenuItem disabled={!request || !count} onSelect={() => request && setDeploying({ project: projectId, checkout: request.checkout, targets: request.targets, options: request.options, channel: "" })}>
+              <DropdownMenuItem disabled={!request || !count} onSelect={() => request && setDeploying({ project: projectId, checkout: request.checkout, targets: request.targets, options: request.options, channel: "", autoVersion, writePubspec })}>
                 Deploy what's selected ({count} build{count === 1 ? "" : "s"})…
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -481,7 +552,7 @@ export function BuildForm({ projectId, checkout }: { projectId: string; checkout
           open={!!deploying}
           onOpenChange={(o) => !o && setDeploying(null)}
           what={deploying}
-          onStarted={() => setMessage("Deploying: it posts once every build is done.")}
+          onStarted={() => (setMessage("Deploying: it posts once every build is done."), loadVersions())}
         />
         {message && <p className="text-center text-xs text-muted-foreground">{message}</p>}
       </CardFooter>

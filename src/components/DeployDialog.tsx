@@ -156,7 +156,11 @@ export function DeployDialog({
               ))}
             </div>
             <p className="text-xs text-muted-foreground">
-              Posts to <span className="font-medium text-foreground">{preview.channel}</span> · {preview.checkout.branch} @ {preview.checkout.sha.slice(0, 8)} · version {preview.version} ·
+              Version <span className="font-mono text-foreground">{preview.version}</span>
+              {what?.autoVersion ? " (the next one, taken when it starts" + (what.writePubspec ? " and committed to pubspec)" : ")") : " (pubspec's)"}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Posts to <span className="font-medium text-foreground">{preview.channel}</span> · {preview.checkout.branch} @ {preview.checkout.sha.slice(0, 8)} ·
               changes since {preview.since ? `the last deploy (${preview.since.slice(0, 8)})` : "the last release"}
             </p>
             {preview.skipped.length > 0 && <p className="text-xs text-warning">Skipped: {preview.skipped.map((s) => s.reason).join("; ")}</p>}

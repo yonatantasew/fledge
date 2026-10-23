@@ -100,6 +100,8 @@ export interface BuildRequest {
   checkout: string;
   targets: Target[];
   options: BuildOptions;
+  autoVersion?: boolean; // take the next version when queued
+  writePubspec?: boolean; // and write it to pubspec.yaml (committed)
 }
 
 async function post<T>(url: string, body: unknown = {}): Promise<T> {
@@ -120,7 +122,7 @@ export const api = {
     return res.json();
   },
   plan: (req: BuildRequest) => post<PlanResult>("/api/plan", req),
-  queue: (req: BuildRequest) => post<{ queued: number; skipped: SkippedBuild[] }>("/api/jobs", req),
+  queue: (req: BuildRequest) => post<{ queued: number; skipped: SkippedBuild[]; version: string; pubspecCommit?: string }>("/api/jobs", req),
   cancel: (id: string) => post(`/api/jobs/${id}/cancel`),
   resume: (id: string) => post(`/api/jobs/${id}/resume`),
   files: async (id: string, path = ""): Promise<ArchiveListing> => {
@@ -555,7 +557,10 @@ export interface Deployment {
 }
 
 /** What to deploy: a route of the app's, or the form's selection and a channel. */
-export type DeployWhat = { project: string; checkout?: string } & ({ route: string } | { targets: unknown; options: unknown; channel: string });
+export type DeployWhat = { project: string; checkout?: string; autoVersion?: boolean; writePubspec?: boolean } & (
+  | { route: string }
+  | { targets: unknown; options: unknown; channel: string }
+);
 
 export interface DeployPreview {
   label: string;
@@ -605,3 +610,33 @@ export function useDeployments(project: string | null) {
   }, [project]);
   return list;
 }
+
+// ----------------------------------------------------------------- versions
+
+export interface SeenVersion {
+  version: string;
+  from: "release" | "build" | "pubspec";
+  label: string;
+}
+
+export interface VersionRecord {
+  version: string;
+  at: number;
+  branch: string;
+  sha: string;
+  how: "auto" | "typed" | "pubspec";
+  pubspecCommit?: string;
+  builds: { id: string; environment: string; platform: Platform; artifact: string }[];
+  deployment?: string;
+}
+
+export interface VersionsInfo {
+  next: { version: string; name: string; number: string; after: SeenVersion | null };
+  settings: { basedOn: "highest" | "releases"; autoIncrement: boolean; writePubspec: boolean };
+  history: VersionRecord[]; // newest first
+}
+
+export const versionsApi = {
+  get: (project: string, checkout?: string) =>
+    send<VersionsInfo>("GET", `/api/versions?project=${encodeURIComponent(project)}${checkout ? `&checkout=${encodeURIComponent(checkout)}` : ""}`),
+};
