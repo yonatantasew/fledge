@@ -79,3 +79,10 @@ test("writing the version commits pubspec.yaml alone; edits, no-ops and refused 
   assert.match(readFileSync(path.join(repo, "pubspec.yaml"), "utf8"), /version: 1\.3\.1\+57/, "put back");
   assert.equal(git("status", "--porcelain", "--", "pubspec.yaml"), "");
 });
+
+test("records added at the same moment are all kept", async () => {
+  const h = versionHistory(path.join(dir, "together"));
+  const record = (version: string) => ({ version, at: 1, branch: "main", sha: "abc", how: "auto" as const, builds: [] });
+  await Promise.all(["1.3.1+57", "1.3.0+30", "1.3.1+58", "1.3.0+31"].map((v) => h.add("demo", record(v))));
+  assert.deepEqual((await h.list("demo")).map((r) => r.version), ["1.3.1+57", "1.3.0+30", "1.3.1+58", "1.3.0+31"]);
+});

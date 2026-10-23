@@ -78,16 +78,23 @@ export interface VersionRecord {
 export function versionHistory(home: string) {
   const file = path.join(home, "versions.json");
   const read = () => readFile(file, "utf8").then((t) => JSON.parse(t) as Record<string, VersionRecord[]>, () => ({}) as Record<string, VersionRecord[]>);
+  // Writes go one at a time: two at once (a queue with Prod's own version
+  // records two) would each rewrite the file from what they read.
+  let writing: Promise<unknown> = Promise.resolve();
   return {
     async list(app: string) {
       return (await read())[app] ?? [];
     },
-    async add(app: string, record: VersionRecord) {
-      const all = await read();
-      (all[app] ??= []).push(record);
-      await mkdir(home, { recursive: true });
-      await writeFile(`${file}.tmp`, JSON.stringify(all, null, 2));
-      await rename(`${file}.tmp`, file);
+    add(app: string, record: VersionRecord) {
+      const write = writing.then(async () => {
+        const all = await read();
+        (all[app] ??= []).push(record);
+        await mkdir(home, { recursive: true });
+        await writeFile(`${file}.tmp`, JSON.stringify(all, null, 2));
+        await rename(`${file}.tmp`, file);
+      });
+      writing = write.catch(() => {});
+      return write;
     },
   };
 }
