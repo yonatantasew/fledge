@@ -1030,6 +1030,7 @@ async function recordVersion(project: Project, p: { version: string; checkout: {
 
 // Builds that are posted together, with notes, once all have built (deploy.ts).
 const DEPLOYMENTS = path.join(FLEDGE_HOME, "deployments.json");
+let savingDeployments: Promise<unknown> = Promise.resolve();
 const savedDeployments: Deployment[] = await readFile(DEPLOYMENTS, "utf8").then((t) => JSON.parse(t) as Deployment[], () => []);
 // A restart mid-post can't know whether Slack got it.
 for (const d of savedDeployments) if (d.status === "posting") ((d.status = "failed"), (d.error = "fledge restarted while posting; check the channel, then post again"));
@@ -1062,8 +1063,11 @@ const deployments = new Deployer(
     },
     changed(list) {
       broadcast("deployments", list);
-      void mkdir(FLEDGE_HOME, { recursive: true })
-        .then(() => writeFile(`${DEPLOYMENTS}.tmp`, JSON.stringify(list, null, 2)))
+      // One write at a time (progress calls this often), each of the list as it is then.
+      const text = JSON.stringify(list, null, 2);
+      savingDeployments = savingDeployments
+        .then(() => mkdir(FLEDGE_HOME, { recursive: true }))
+        .then(() => writeFile(`${DEPLOYMENTS}.tmp`, text))
         .then(() => rename(`${DEPLOYMENTS}.tmp`, DEPLOYMENTS))
         .catch(() => {});
     },
