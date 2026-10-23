@@ -632,25 +632,25 @@ const assistantContext: ToolContext = {
     // No switch of its own: the app's defaults, unless the call says otherwise.
     const auto = how.auto ?? project.config.versions.autoIncrement;
     const writePubspec = how.writePubspec ?? project.config.versions.writePubspec;
-    const typed = { buildName: String(options.buildName ?? ""), buildNumber: String(options.buildNumber ?? "") };
-    const next = auto ? await nextVersionFor(project, checkout) : null;
-    const r = await plan({ project: id, checkout, targets, options: next ? { ...options, buildName: next.name, buildNumber: next.number } : options });
-    if ("error" in r) throw new Error(String(r.error));
+    const body = { project: id, checkout, targets, options };
+    const typed = typedVersions(body);
+    const preview = await planVersioned(project, checkout, body, { auto, writePubspec, typed, start: false });
+    if ("error" in preview) throw new Error(preview.error);
+    const r = preview.plan;
     const label = (name: string) => project.config!.flavors.find((f) => f.name === name);
-    const pubspec = writePubspec && (auto || typed.buildName || typed.buildNumber) ? " and committed to pubspec" : "";
+    const given = typed.main.buildName || typed.main.buildNumber;
+    const pubspec = writePubspec && (auto || given) ? " and committed to pubspec" : "";
     return {
       builds: r.builds.map((b) => ({ flavor: b.flavor, label: label(b.flavor)?.label ?? b.flavor, confirm: !!label(b.flavor)?.confirm, mode: b.mode, platform: b.platform, artifact: b.artifact })),
       skipped: r.skipped.map((s) => `${s.flavor} ${s.mode} ${s.platform}: ${s.reason}`),
-      version: next ? `${next.version}, the next one, taken when queued${pubspec}` : typed.buildName || typed.buildNumber ? `${r.version}, as given${pubspec}` : `${r.version}, pubspec's`,
+      version: auto ? `${r.version}, the next ${preview.tracks.length > 1 ? "ones" : "one"}, taken when queued${pubspec}` : given ? `${r.version}, as given${pubspec}` : `${r.version}, pubspec's`,
       // The version is picked when it's queued, under the same lock as the page's queues.
       queue: () =>
         underVersionLock(async () => {
-          const v = await pickVersion(project, checkout, { auto, writePubspec, ...typed });
-          const p = await plan({ project: id, checkout, targets, options: { ...options, buildName: v.buildName, buildNumber: v.buildNumber } });
-          if ("error" in p) throw new Error(String(p.error));
-          const queued = enqueue(p);
-          await recordVersion(project, p, queued, v.how, v.pubspecCommit);
-          return { builds: queued.map((j) => j.id), version: p.version };
+          const v = await planVersioned(project, checkout, body, { auto, writePubspec, typed, start: true });
+          if ("error" in v) throw new Error(v.error);
+          const queued = enqueueTracks(project, v.tracks);
+          return { builds: queued.map((j) => j.id), version: v.plan.version };
         }),
     };
   },
@@ -971,18 +971,31 @@ function underVersionLock<T>(fn: () => Promise<T>): Promise<T> {
 const day = (t: number) => new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
 /** Every version seen for an app: release tags, what fledge built, and pubspec in the checkout and on the base branch. */
-async function versionsSeen(project: Project, checkout: string): Promise<SeenVersion[]> {
+// Prod (the environments that ask for confirmation) has its own version track:
+// it's usually another app ID, so its build numbers go up on their own.
+type Track = "main" | "prod";
+const trackOf = (project: Project, flavor: string): Track => (flavorOf(project.config!, flavor)?.confirm ? "prod" : "main");
+const hasProdTrack = (project: Project) => project.config!.flavors.some((f) => f.confirm);
+
+async function versionsSeen(project: Project, checkout: string, track: Track = "main"): Promise<SeenVersion[]> {
   const seen: SeenVersion[] = [];
-  const tags = await run("git", ["-C", project.root, "for-each-ref", "--format=%(refname:short)\t%(creatordate:unix)", "refs/tags/v*"]).then(
+  // Release tags go to testers: the main track's.
+  const tags = track === "prod" ? [] : await run("git", ["-C", project.root, "for-each-ref", "--format=%(refname:short)\t%(creatordate:unix)", "refs/tags/v*"]).then(
     (r) => r.stdout.trim().split("\n").filter(Boolean).map((l) => ({ tag: l.split("\t")[0], at: Number(l.split("\t")[1]) * 1000 })),
     () => [],
   );
   seen.push(...releasesSeen(tags).map((s) => ({ ...s, label: `${s.label}${s.at ? `, ${day(s.at)}` : ""}` })));
-  for (const r of await versionLog.list(project.id)) seen.push({ version: r.version, from: "build", label: `built ${day(r.at)} on ${r.branch}`, at: r.at });
-  for (const j of jobs.filter((x) => x.project === project.id)) {
+  for (const r of await versionLog.list(project.id)) {
+    if (r.builds.length && !r.builds.some((b) => trackOf(project, b.environment) === track)) continue;
+    seen.push({ version: r.version, from: "build", label: `built ${day(r.at)} on ${r.branch}`, at: r.at });
+  }
+  for (const j of jobs.filter((x) => x.project === project.id && trackOf(project, x.flavor) === track)) {
     const v = j.verified?.version ?? j.version;
     if (v) seen.push({ version: v, from: "build", label: `built ${day(j.createdAt)} on ${j.branch}`, at: j.createdAt });
   }
+  // pubspec is where a track starts. Prod uses it only until it has builds of its
+  // own: pubspec then holds the main track's version (which may have been written to it).
+  if (track === "prod" && seen.length) return seen;
   const pub = (text: string) => /^version:\s*(\S+)/m.exec(text)?.[1];
   const here = pub(await readFile(path.join(checkout, "pubspec.yaml"), "utf8").catch(() => ""));
   if (here) seen.push({ version: here, from: "pubspec", label: "pubspec in this checkout" });
@@ -992,8 +1005,9 @@ async function versionsSeen(project: Project, checkout: string): Promise<SeenVer
   return seen;
 }
 
-async function nextVersionFor(project: Project, checkout: string) {
-  return suggestNext(await versionsSeen(project, checkout), project.config!.versions.basedOn);
+async function nextVersionFor(project: Project, checkout: string, track: Track = "main") {
+  // basedOn is about release tags, which are the main track's.
+  return suggestNext(await versionsSeen(project, checkout, track), track === "prod" ? "highest" : project.config!.versions.basedOn);
 }
 
 /**
@@ -1003,17 +1017,86 @@ async function nextVersionFor(project: Project, checkout: string) {
  */
 type PickedVersion = { buildName: string; buildNumber: string; how: "auto" | "typed" | "pubspec"; pubspecCommit?: string };
 
-async function pickVersion(project: Project, checkout: string, o: { auto: boolean; writePubspec: boolean; buildName: string; buildNumber: string }): Promise<PickedVersion> {
+async function pickVersion(project: Project, checkout: string, o: { auto: boolean; writePubspec: boolean; buildName: string; buildNumber: string }, track: Track = "main"): Promise<PickedVersion> {
   let { buildName, buildNumber } = o;
   let how: "auto" | "typed" | "pubspec" = buildName || buildNumber ? "typed" : "pubspec";
   if (o.auto) {
-    const n = await nextVersionFor(project, checkout);
+    const n = await nextVersionFor(project, checkout, track);
     ({ name: buildName, number: buildNumber } = n);
     how = "auto";
   }
   // Hooks run as for any commit; a refused commit leaves pubspec as it was.
   const pubspecCommit = o.writePubspec && how !== "pubspec" ? (await commitPubspecVersion(checkout, buildName, buildNumber)).commit : undefined;
   return { buildName, buildNumber, how, pubspecCommit };
+}
+
+
+type Typed = { buildName: string; buildNumber: string };
+type PlannedTrack = { track: Track; version: PickedVersion; plan: Exclude<Awaited<ReturnType<typeof plan>>, { error: unknown }> };
+
+/**
+ * Plans a queue's builds with their versions, Prod on its own track: each
+ * track's builds are planned with that track's version (next when auto,
+ * else typed, else pubspec's). `start` picks for real, and may write the
+ * version to pubspec, which takes one: the first track's. Without it,
+ * auto shows the next versions without taking them.
+ */
+async function planVersioned(
+  project: Project,
+  checkout: string,
+  body: Record<string, unknown>,
+  o: { auto: boolean; writePubspec: boolean; typed: Record<Track, Typed>; start: boolean },
+): Promise<{ plan: PlannedTrack["plan"]; tracks: PlannedTrack[] } | { error: string }> {
+  const targets = Array.isArray(body.targets) ? (body.targets as { flavor?: unknown }[]) : [];
+  const groups = (["main", "prod"] as Track[])
+    .map((track) => ({ track, targets: targets.filter((t) => trackOf(project, String(t.flavor)) === track) }))
+    .filter((g) => g.targets.length);
+  const options = (body.options ?? {}) as Record<string, unknown>;
+  const tracks: PlannedTrack[] = [];
+  let wrote = false;
+  for (const g of groups.length ? groups : [{ track: "main" as Track, targets }]) {
+    const typed = o.typed[g.track];
+    let version: PickedVersion;
+    if (o.start) {
+      version = await pickVersion(project, checkout, { auto: o.auto, writePubspec: o.writePubspec && !wrote, ...typed }, g.track);
+      wrote ||= !!version.pubspecCommit;
+    } else if (o.auto) {
+      const n = await nextVersionFor(project, checkout, g.track);
+      version = { buildName: n.name, buildNumber: n.number, how: "auto" };
+    } else {
+      version = { ...typed, how: typed.buildName || typed.buildNumber ? "typed" : "pubspec" };
+    }
+    const p = await plan({ ...body, targets: g.targets, options: { ...options, buildName: version.buildName, buildNumber: version.buildNumber } });
+    if ("error" in p) return { error: String(p.error) };
+    tracks.push({ track: g.track, version, plan: p });
+  }
+  const label = (t: PlannedTrack) => (t.track === "prod" && tracks.length > 1 ? `Prod ${t.plan.version}` : t.plan.version);
+  return {
+    // One plan to describe the whole queue; enqueueTracks queues each track's own.
+    plan: { ...tracks[0].plan, builds: tracks.flatMap((t) => t.plan.builds), skipped: tracks.flatMap((t) => t.plan.skipped), version: tracks.map(label).join(" · ") },
+    tracks,
+  };
+}
+
+/** Queues each track's builds with its version, and records them. */
+function enqueueTracks(project: Project, tracks: PlannedTrack[], deployment?: string) {
+  const queued: Job[] = [];
+  for (const t of tracks) {
+    const jobs = enqueue(t.plan);
+    if (deployment) for (const j of jobs) j.deployment = deployment;
+    void recordVersion(project, t.plan, jobs, t.version.how, t.version.pubspecCommit, deployment);
+    queued.push(...jobs);
+  }
+  return queued;
+}
+
+/** The version fields of a request: the main one in options, Prod's in prodVersion. */
+function typedVersions(b: Record<string, unknown>): Record<Track, Typed> {
+  const field = (o: unknown, k: string) => (typeof (o as Record<string, unknown> | undefined)?.[k] === "string" ? String((o as Record<string, unknown>)[k]).trim() : "");
+  return {
+    main: { buildName: field(b.options, "buildName"), buildNumber: field(b.options, "buildNumber") },
+    prod: { buildName: field(b.prodVersion, "buildName"), buildNumber: field(b.prodVersion, "buildNumber") },
+  };
 }
 
 /** Remembers which builds a version went into. */
@@ -1105,22 +1188,22 @@ async function deployRequest(b: Record<string, unknown>, start = false) {
     targets = b.targets;
     options = b.options;
   }
-  // Auto version: the preview shows the next one; starting picks it for real (and may write pubspec).
+  // Versions: the preview shows the next ones (auto); starting picks them for real (and may write pubspec).
   const checkoutPath = await resolveCheckout(project, b.checkout);
   if (!checkoutPath) return { error: "that checkout isn't one of this app's" };
-  let version: PickedVersion = { buildName: "", buildNumber: "", how: "pubspec" };
-  if (b.autoVersion === true) {
-    try {
-      version = start
-        ? await pickVersion(project, checkoutPath, { auto: true, writePubspec: b.writePubspec === true, buildName: "", buildNumber: "" })
-        : { ...(await nextVersionFor(project, checkoutPath).then((n) => ({ buildName: n.name, buildNumber: n.number }))), how: "auto" };
-    } catch (e) {
-      return { error: (e as Error).message };
-    }
-    options = { ...(options as Record<string, unknown>), buildName: version.buildName, buildNumber: version.buildNumber };
+  let v: Awaited<ReturnType<typeof planVersioned>>;
+  try {
+    v = await planVersioned(project, checkoutPath, { project: project.id, checkout: b.checkout, targets, options }, {
+      auto: b.autoVersion === true,
+      writePubspec: b.writePubspec === true,
+      typed: { main: { buildName: "", buildNumber: "" }, prod: { buildName: "", buildNumber: "" } },
+      start,
+    });
+  } catch (e) {
+    return { error: (e as Error).message };
   }
-  const p = await plan({ project: project.id, checkout: b.checkout, targets, options });
-  if ("error" in p) return { error: String(p.error) };
+  if ("error" in v) return { error: v.error };
+  const p = v.plan;
   if (!p.builds.length) return { error: `nothing can be built: ${p.skipped.map((x) => x.reason).join("; ")}` };
   if (p.builds.length > 10) return { error: "one Slack message holds 10 files; deploy at most 10 builds" };
   const head = (await run("git", ["-C", p.checkout.path, "rev-parse", "HEAD"])).stdout.trim();
@@ -1128,15 +1211,13 @@ async function deployRequest(b: Record<string, unknown>, start = false) {
   // How it posts: the route's choice, unless this deploy picks another.
   if (b.post === "together" || b.post === "as-built") mode = b.post;
   if (b.onFailure === "hold" || b.onFailure === "post-built") onFailure = b.onFailure;
-  return { project, route: route?.id ?? null, label, channel, plan: p, head, key, mode, onFailure, version };
+  return { project, route: route?.id ?? null, label, channel, plan: p, tracks: v.tracks, head, key, mode, onFailure };
 }
 
 /** Queues a deploy's builds and starts waiting for them. */
 function startDeploy(r: Exclude<Awaited<ReturnType<typeof deployRequest>>, { error: string }>, notes: string) {
   const id = `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-  const queued = enqueue(r.plan);
-  for (const j of queued) j.deployment = id;
-  void recordVersion(r.project, r.plan, queued, r.version.how, r.version.pubspecCommit, id);
+  const queued = enqueueTracks(r.project, r.tracks, id);
   deployments.add({
     id, project: r.project.id, route: r.route, key: r.key, label: r.label, channel: r.channel,
     checkout: r.plan.checkout.path, branch: r.plan.checkout.branch, sha: r.head,
@@ -1485,19 +1566,11 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
     const project = await getProject(b.project);
     const checkout = project && (await resolveCheckout(project, b.checkout));
     if (!project?.config || !checkout) return send(res, 400, { error: "unknown app or checkout" });
-    const o = (b.options ?? {}) as Record<string, unknown>;
     const r = await underVersionLock(async () => {
-      const v = await pickVersion(project, checkout, {
-        auto: b.autoVersion === true,
-        writePubspec: b.writePubspec === true,
-        buildName: typeof o.buildName === "string" ? o.buildName.trim() : "",
-        buildNumber: typeof o.buildNumber === "string" ? o.buildNumber.trim() : "",
-      });
-      const p = await plan({ ...b, options: { ...o, buildName: v.buildName, buildNumber: v.buildNumber } });
-      if ("error" in p) return p;
-      const queued = enqueue(p);
-      await recordVersion(project, p, queued, v.how, v.pubspecCommit);
-      return { queued: p.builds.length, skipped: p.skipped, version: p.version, pubspecCommit: v.pubspecCommit };
+      const v = await planVersioned(project, checkout, b, { auto: b.autoVersion === true, writePubspec: b.writePubspec === true, typed: typedVersions(b), start: true });
+      if ("error" in v) return v;
+      enqueueTracks(project, v.tracks);
+      return { queued: v.plan.builds.length, skipped: v.plan.skipped, version: v.plan.version, pubspecCommit: v.tracks.find((t) => t.version.pubspecCommit)?.version.pubspecCommit };
     }).catch((e: Error) => ({ error: e.message }));
     return send(res, "error" in r ? 400 : 200, r);
   }
@@ -1511,6 +1584,8 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
     if (!project?.config || !checkout) return send(res, 404, { error: "unknown app or checkout" });
     return send(res, 200, {
       next: await nextVersionFor(project, checkout),
+      // Prod's own track, when the app has environments that ask for confirmation.
+      nextProd: hasProdTrack(project) ? await nextVersionFor(project, checkout, "prod") : null,
       settings: project.config.versions,
       history: (await versionLog.list(project.id)).slice(-100).reverse(),
     });
