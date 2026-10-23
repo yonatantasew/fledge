@@ -7,7 +7,7 @@
 // are approved.)
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, rmSync, mkdtempSync } from "node:fs";
+import { copyFileSync, readFileSync, rmSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -28,9 +28,12 @@ const out = mkdtempSync(path.join(tmpdir(), "fledge-release-"));
 try {
   execFileSync("npm", ["run", "build"], { cwd: root, stdio: "inherit" }); // fresh dist/ and dist-server/
   const file = path.join(out, sh("npm", ["pack", "--silent", "--pack-destination", out]).split("\n").pop());
+  // The same package under a fixed name too, so releases/latest/download/fledge.tgz is always the newest.
+  const latest = path.join(out, "fledge.tgz");
+  copyFileSync(file, latest);
   execFileSync(
     "gh",
-    ["release", "create", tag, file, "--repo", repo, "--target", "main", "--title", `fledge ${version}`, "--generate-notes"],
+    ["release", "create", tag, file, latest, "--repo", repo, "--target", "main", "--title", `fledge ${version}`, "--generate-notes"],
     { cwd: root, stdio: "inherit" },
   );
 } finally {

@@ -13,16 +13,15 @@ over MCP.
 
 ## Install
 
-fledge is installed from its GitHub releases. You need the GitHub CLI (`gh`),
-logged in with an account that can see this repository:
+fledge is installed from its GitHub releases:
 
 ```sh
-gh release download --repo yonatantasew/fledge --pattern '*.tgz' --dir /tmp/fledge --clobber
-npm install -g /tmp/fledge/*.tgz
+npm install -g https://github.com/yonatantasew/fledge/releases/latest/download/fledge.tgz
 ```
 
 The package is prebuilt, so installing it runs no scripts. To update, run the
-same two lines again.
+same line again. A particular version is
+`https://github.com/yonatantasew/fledge/releases/download/v0.12.2/fledge.tgz`.
 
 Then run it:
 
