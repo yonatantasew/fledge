@@ -22,19 +22,24 @@ export const choiceKey = (route: string | null) => route ?? "one-off";
 export function choiceStore(home: string) {
   const file = path.join(home, "deploy-choices.json");
   const read = () => readFile(file, "utf8").then((t) => JSON.parse(t) as Store, () => ({}) as Store);
+  let writing: Promise<unknown> = Promise.resolve(); // one write at a time
   return {
     async get(app: string, route: string | null): Promise<DeployChoice | null> {
       return (await read())[app]?.[choiceKey(route)] ?? null;
     },
-    async set(app: string, route: string | null, choice: DeployChoice) {
-      const all = await read();
+    set(app: string, route: string | null, choice: DeployChoice) {
       const clean: DeployChoice = { post: choice.post, onFailure: choice.onFailure };
       if (choice.channel) clean.channel = choice.channel.slice(0, 81);
       if (choice.note?.trim()) clean.note = choice.note.slice(0, 2000);
-      (all[app] ??= {})[choiceKey(route)] = clean;
-      await mkdir(home, { recursive: true });
-      await writeFile(`${file}.tmp`, JSON.stringify(all, null, 2));
-      await rename(`${file}.tmp`, file);
+      const write = writing.then(async () => {
+        const all = await read();
+        (all[app] ??= {})[choiceKey(route)] = clean;
+        await mkdir(home, { recursive: true });
+        await writeFile(`${file}.tmp`, JSON.stringify(all, null, 2));
+        await rename(`${file}.tmp`, file);
+      });
+      writing = write.catch(() => {});
+      return write;
     },
   };
 }

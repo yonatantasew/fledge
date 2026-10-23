@@ -35,3 +35,9 @@ test("a route's default goes into the config, the rest of it untouched; bad inpu
   await assert.rejects(setRoutePost(file, "qa", "each" as "together", "hold"), /\.post/);
   assert.equal(JSON.parse(readFileSync(file, "utf8")).deploy.routes[0].post, "as-built", "a refused edit leaves the file as it was");
 });
+
+test("choices saved at the same moment are all kept", async () => {
+  const store = choiceStore(path.join(dir, "together"));
+  await Promise.all(["a", "b", "c"].map((route) => store.set("demo", route, { post: "as-built", onFailure: "hold" })));
+  assert.deepEqual(await Promise.all(["a", "b", "c"].map((r) => store.get("demo", r).then((c) => c?.post))), ["as-built", "as-built", "as-built"]);
+});
