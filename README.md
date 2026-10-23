@@ -247,6 +247,38 @@ builds finish faster. What you give up:
 
 The file is named `…-arm64.apk`, and the build list marks it.
 
+## Versions
+
+The **build number only ever goes up**, across version names (1.3.1+57,
+1.3.1+58, 1.3.2+59…), so a newer build always installs over an older one; on
+Android a lower number can't be installed over a higher one.
+
+- **The next version fills itself in.** It takes the highest name seen and a
+  build number above every one seen, from release tags, every version
+  fledge has built for the app, and pubspec in the checkout and on the base
+  branch. The form says what it follows ("after 1.2.16+56, built Oct 22 on
+  main"). Type over it, **Use pubspec's**, or **Use** the suggestion again.
+- **Auto-increment** takes the next version itself each time you queue or
+  deploy; everything queued together shares it. One version is picked at a
+  time, so two queues can't take the same number.
+- **Write it to pubspec.yaml** also commits it before building: pubspec.yaml
+  alone, "Set the version to …", on the checkout's branch, with the
+  repository's hooks, not pushed. A pubspec with uncommitted edits is
+  refused; a commit git refuses leaves pubspec as it was.
+- **Versions built so far** lists each version with its builds, whether it
+  was deployed, how it was picked, and the commit.
+
+The Release tab suggests the same next version. Both switches are each
+developer's choice, remembered in their browser; the app's config sets the
+defaults and what the next version is based on:
+
+```json
+"versions": { "basedOn": "highest", "autoIncrement": true, "writePubspec": false }
+```
+
+`basedOn` is `highest` (the default: tags, builds and pubspec) or `releases`
+(release tags only). The history is `~/.config/fledge/versions.json`.
+
 ## Installing on a device
 
 Finished APK, `.app` and Development or Ad hoc IPA builds have an **Install**
