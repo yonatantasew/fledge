@@ -38,16 +38,22 @@ export interface ToolContext {
   releases(appId: string): Promise<{ tag: string; prerelease: boolean; createdAt: string }[]>;
   changes(appId: string, since: string | null): Promise<unknown>;
   plan(appId: string, checkout: string | undefined, target: { platform: string; flavor: string; mode: string }, output?: string): Promise<unknown>;
-  /** Plans builds without queueing them; queue() queues exactly that plan. Throws when it can't be built. */
+  /**
+   * Plans builds without queueing them; queue() queues them, taking the
+   * version then (the next one when auto, unset: the app config's default).
+   * Throws when they can't be built.
+   */
   prepareBuilds(
     appId: string,
     checkout: string,
     targets: { platform: string; flavor: string; mode: string }[],
     options: Record<string, unknown>,
+    version?: { auto?: boolean; writePubspec?: boolean },
   ): Promise<{
     builds: { flavor: string; label: string; confirm: boolean; mode: string; platform: string; artifact: string }[];
     skipped: string[];
-    queue(): string[];
+    version: string; // "1.3.1+57, the next one, taken when queued"
+    queue(): Promise<{ builds: string[]; version: string }>;
   }>;
   cancelBuild(id: string): void;
   /** Checks a stopped or failed build can run again unchanged; resume() queues it. Throws with the reason otherwise. */
@@ -59,8 +65,8 @@ export interface ToolContext {
   /** What a deploy would do and post (notes since the last deploy); start() queues it. Throws when it can't. */
   prepareDeploy(
     appId: string,
-    req: { route?: string; targets?: unknown; options?: unknown; channel?: string; checkout?: string; post?: string; onFailure?: string },
-  ): Promise<{ label: string; channel: string; version: string; branch: string; sha: string; since: string | null; notes: string; post: string; onFailure: string; builds: { name: string; confirm: boolean }[]; start(notes: string): string }>;
+    req: { route?: string; targets?: unknown; options?: unknown; channel?: string; checkout?: string; post?: string; onFailure?: string; autoVersion?: boolean; writePubspec?: boolean },
+  ): Promise<{ label: string; channel: string; version: string; branch: string; sha: string; since: string | null; notes: string; post: string; onFailure: string; builds: { name: string; confirm: boolean }[]; start(notes: string): Promise<string> }>;
   /** What shipping a build to Slack would post; ship() posts it. Throws when it can't be shipped. */
   prepareShip(buildId: string, note: string): Promise<{ channel: string; text: string; file: string; size: number; ship(): Promise<unknown> }>;
   /** The next release: its facts without the excluded PRs (and version bumps), and the template notes. Slow. */
@@ -457,6 +463,8 @@ const TOOLS: Tool[] = [
           obfuscate: bool("Rename Dart symbols; needs split_debug_info."),
           arm64_only: bool("Android: 64-bit ARM phones only (faster; for a developer's own phone)."),
           toggles: { type: "array", description: "Ids of the app's switches to turn on (see app_overview).", items: str("A switch id.") },
+          auto_version: bool("Take the next version (the build number only goes up). Default: the app's setting."),
+          write_pubspec: bool("Also write the version to pubspec.yaml and commit that file (local). Default: the app's setting."),
         },
         ["app", "builds"],
       ),
@@ -473,19 +481,21 @@ const TOOLS: Tool[] = [
         obfuscate: i.obfuscate === true,
         arm64Only: i.arm64_only === true,
         toggles: i.toggles ?? [],
-      });
+      }, { auto: i.auto_version as boolean | undefined, writePubspec: i.write_pubspec as boolean | undefined });
       if (!p.builds.length) throw new Error(`none of these can be built: ${p.skipped.join("; ")}`);
       const flags = [i.split_debug_info && "split debug info", i.obfuscate && "obfuscated", i.arm64_only && "arm64 only", ...((i.toggles as string[] | undefined) ?? [])].filter(Boolean);
       return {
         title: `Queue ${p.builds.length} build${p.builds.length > 1 ? "s" : ""} of ${a.name}`,
         details: [
           `On ${c.branch} @ ${c.sha.slice(0, 8)}${c.dirty ? ` with ${c.dirty} uncommitted file(s)` : ""}`,
+          `Version ${p.version}`,
           ...p.builds.map((b) => `${b.label} · ${b.mode} · ${b.platform} ${b.artifact}${b.confirm ? " (this environment asks for confirmation)" : ""}`),
           ...(flags.length ? [`Options: ${flags.join(", ")}`] : []),
           ...p.skipped.map((s) => `Skipped: ${s}`),
         ],
         async run() {
-          return { queued: p.queue(), skipped: p.skipped };
+          const q = await p.queue();
+          return { queued: q.builds, version: q.version, skipped: p.skipped };
         },
       };
     },
@@ -610,6 +620,8 @@ const TOOLS: Tool[] = [
             "How to post (default: the route's setting, else together): together = one message once all have built, nothing if one fails; together-post-built = the same, but a failure posts what built; as-built = the notes with the first build, later ones replying in its thread.",
             { enum: ["together", "together-post-built", "as-built"] },
           ),
+          auto_version: bool("Take the next version (the build number only goes up). Default: the app's setting."),
+          write_pubspec: bool("Also write the version to pubspec.yaml and commit that file (local). Default: the app's setting."),
         },
         ["app"],
       ),
@@ -627,7 +639,7 @@ const TOOLS: Tool[] = [
             options: { androidArtifact: i.android_output, iosArtifact: i.ios_output, exportMethod: i.export_method },
           };
       const how = i.post === "as-built" ? { post: "as-built" } : i.post === "together-post-built" ? { post: "together", onFailure: "post-built" } : i.post === "together" ? { post: "together", onFailure: "hold" } : {};
-      const d = await ctx.prepareDeploy(a.id, { ...req, ...how });
+      const d = await ctx.prepareDeploy(a.id, { ...req, ...how, autoVersion: i.auto_version as boolean | undefined, writePubspec: i.write_pubspec as boolean | undefined });
       const notes = typeof i.note === "string" && i.note.trim() ? `${d.notes}\n\n${i.note.trim()}` : d.notes;
       const items = notes.split("\n").filter((l) => /^\d+\. /.test(l)).length;
       const confirm = d.builds.filter((b) => b.confirm).map((b) => b.name);
@@ -635,7 +647,8 @@ const TOOLS: Tool[] = [
         title: `Deploy ${d.label} to ${d.channel}`,
         details: [
           `Builds: ${d.builds.map((b) => b.name).join(", ")}`,
-          `From ${d.branch} @ ${d.sha.slice(0, 8)}, version ${d.version}`,
+          `From ${d.branch} @ ${d.sha.slice(0, 8)}`,
+          `Version ${d.version}`,
           `Notes: ${items ? `${items} change${items === 1 ? "" : "s"}` : "no listed changes"} since ${d.since ? `the last deploy (${d.since.slice(0, 8)})` : "the last release"}${i.note ? ", plus your note" : ""}`,
           ...(confirm.length ? [`Includes builds that ask for confirmation: ${confirm.join(", ")}`] : []),
           d.post === "as-built"
@@ -645,7 +658,7 @@ const TOOLS: Tool[] = [
               : "Posts once every build has built; nothing is posted if one fails",
         ],
         async run() {
-          return { deployment: d.start(notes), note: "list_deployments shows its progress" };
+          return { deployment: await d.start(notes), note: "list_deployments shows its progress" };
         },
       };
     },

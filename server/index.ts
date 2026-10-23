@@ -626,15 +626,32 @@ const assistantContext: ToolContext = {
     if (r.skipped.length) throw new Error(r.skipped[0].reason);
     return { command: r.builds[0].argv.join(" "), pubGetFirst: r.pubGet?.join(" ") ?? null, notes: r.builds[0].notes };
   },
-  async prepareBuilds(id, checkout, targets, options) {
-    const r = await plan({ project: id, checkout, targets, options });
+  async prepareBuilds(id, checkout, targets, options, how = {}) {
+    const project = await getProject(id);
+    if (!project?.config) throw new Error("unknown app, or its config doesn't load");
+    // No switch of its own: the app's defaults, unless the call says otherwise.
+    const auto = how.auto ?? project.config.versions.autoIncrement;
+    const writePubspec = how.writePubspec ?? project.config.versions.writePubspec;
+    const typed = { buildName: String(options.buildName ?? ""), buildNumber: String(options.buildNumber ?? "") };
+    const next = auto ? await nextVersionFor(project, checkout) : null;
+    const r = await plan({ project: id, checkout, targets, options: next ? { ...options, buildName: next.name, buildNumber: next.number } : options });
     if ("error" in r) throw new Error(String(r.error));
-    const flavors = (await getProject(id))?.config?.flavors ?? [];
-    const label = (name: string) => flavors.find((f) => f.name === name);
+    const label = (name: string) => project.config!.flavors.find((f) => f.name === name);
+    const pubspec = writePubspec && (auto || typed.buildName || typed.buildNumber) ? " and committed to pubspec" : "";
     return {
       builds: r.builds.map((b) => ({ flavor: b.flavor, label: label(b.flavor)?.label ?? b.flavor, confirm: !!label(b.flavor)?.confirm, mode: b.mode, platform: b.platform, artifact: b.artifact })),
       skipped: r.skipped.map((s) => `${s.flavor} ${s.mode} ${s.platform}: ${s.reason}`),
-      queue: () => enqueue(r).map((j) => j.id),
+      version: next ? `${next.version}, the next one, taken when queued${pubspec}` : typed.buildName || typed.buildNumber ? `${r.version}, as given${pubspec}` : `${r.version}, pubspec's`,
+      // The version is picked when it's queued, under the same lock as the page's queues.
+      queue: () =>
+        underVersionLock(async () => {
+          const v = await pickVersion(project, checkout, { auto, writePubspec, ...typed });
+          const p = await plan({ project: id, checkout, targets, options: { ...options, buildName: v.buildName, buildNumber: v.buildNumber } });
+          if ("error" in p) throw new Error(String(p.error));
+          const queued = enqueue(p);
+          await recordVersion(project, p, queued, v.how, v.pubspecCommit);
+          return { builds: queued.map((j) => j.id), version: p.version };
+        }),
     };
   },
   async deployments(appId) {
@@ -645,14 +662,17 @@ const assistantContext: ToolContext = {
     }));
   },
   async prepareDeploy(appId, req) {
-    const r = await deployRequest({ project: appId, ...req });
+    const project = await getProject(appId);
+    const settings = project?.config?.versions;
+    const ask = { project: appId, ...req, autoVersion: req.autoVersion ?? settings?.autoIncrement, writePubspec: req.writePubspec ?? settings?.writePubspec };
+    const r = await deployRequest(ask);
     if ("error" in r) throw new Error(r.error);
     const n = await deployNotes(r);
     const flavors = r.project.config!.flavors;
     return {
       label: r.label,
       channel: r.channel,
-      version: r.plan.version,
+      version: ask.autoVersion ? `${r.plan.version}, the next one, taken when it starts${ask.writePubspec ? " and committed to pubspec" : ""}` : `${r.plan.version}, pubspec's`,
       branch: r.plan.checkout.branch,
       sha: r.head,
       since: n.since,
@@ -663,7 +683,13 @@ const assistantContext: ToolContext = {
         const f = flavors.find((x) => x.name === b.flavor);
         return { name: `${f?.label ?? b.flavor} ${b.mode} ${b.platform === "ios" ? "iOS" : "Android"} ${b.artifact}`, confirm: !!f?.confirm };
       }),
-      start: (notes: string) => startDeploy(r, notes).id,
+      // As the page's deploys: the version is picked when it starts.
+      start: (notes: string) =>
+        underVersionLock(async () => {
+          const now = await deployRequest(ask, true);
+          if (now.error !== undefined) throw new Error(now.error);
+          return startDeploy(now, notes).id;
+        }),
     };
   },
   async prepareShip(buildId, note) {

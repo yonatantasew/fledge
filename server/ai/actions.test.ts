@@ -69,11 +69,12 @@ const ctx: ToolContext = {
   releases: async () => [],
   changes: async () => ({}),
   plan: async () => ({}),
-  async prepareBuilds(_app, _checkout, targets, options) {
+  async prepareBuilds(_app, _checkout, targets, options, how) {
     return {
       builds: targets.map((t) => ({ ...t, label: t.flavor === "prod" ? "Prod" : "Staging", confirm: t.flavor === "prod", artifact: "apk" })),
       skipped: [],
-      queue: () => (queued.push({ targets, options }), ["new1"]),
+      version: how?.auto === false ? "1.2.16+56, pubspec's" : "1.3.1+57, the next one, taken when queued",
+      queue: async () => (queued.push({ targets, options, how }), { builds: ["new1"], version: "1.3.1+57" }),
     };
   },
   cancelBuild: (id) => void cancelled.push(id),
@@ -101,7 +102,7 @@ const ctx: ToolContext = {
       post: req.post ?? "together",
       onFailure: req.onFailure ?? "hold",
       builds: [{ name: "Staging release Android apk", confirm: false }, { name: "Prod release iOS ipa", confirm: true }],
-      start: (notes: string) => (deploys.push({ notes }), "d1"),
+      start: async (notes: string) => (deploys.push({ notes }), "d1"),
     };
   },
   async prepareShip(build, note) {
@@ -198,7 +199,12 @@ test("start_builds validates nested input, flags confirm environments, and queue
   assert.equal(asked?.title, "Queue 1 build of demo");
   assert.ok(asked?.details.some((d) => d.includes("Prod") && d.includes("asks for confirmation")));
   assert.ok(asked?.details.includes("Options: split debug info"));
+  assert.ok(asked?.details.includes("Version 1.3.1+57, the next one, taken when queued"));
   assert.equal(queued.length, 1);
+  assert.match(r.content, /"version": "1\.3\.1\+57"/);
+  let off: Approval | undefined;
+  await runTool("start_builds", { app: "demo", builds: [{ environment: "staging", platform: "android", mode: "debug" }], auto_version: false }, ctx, async (a) => ((off = a), false));
+  assert.ok(off?.details.includes("Version 1.2.16+56, pubspec's"));
 });
 
 test("cancel_build only takes live builds; install_build reports the device and erasing", async () => {

@@ -20,7 +20,7 @@ const ctx: ToolContext = {
   releases: async () => [],
   changes: async () => ({}),
   plan: async () => ({ command: "flutter build apk --debug" }),
-  prepareBuilds: async () => ({ builds: [], skipped: [], queue: () => [] }),
+  prepareBuilds: async () => ({ builds: [], skipped: [], version: "", queue: async () => ({ builds: [], version: "" }) }),
   cancelBuild: () => {},
   prepareResume: async () => {
     throw new Error("only a stopped or failed build can be resumed");
