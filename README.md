@@ -264,6 +264,14 @@ Android a lower number can't be installed over a higher one.
   alone, "Set the version to …", on the checkout's branch, with the
   repository's hooks, not pushed. A pubspec with uncommitted edits is
   refused; a commit git refuses leaves pubspec as it was.
+- **Prod has its own version.** Environments that ask for confirmation
+  (`"confirm": true`, usually Prod) are often a separate store listing with
+  its own numbers, so they keep their own track: Prod's next version follows
+  only earlier Prod builds, starting from pubspec until there is one. Queue
+  Staging and Prod together and the form shows a row for each; auto-increment
+  takes the next of both ("1.3.1+58 · Prod 1.3.0+31"). Release tags count
+  for the other environments only, and pubspec, which holds one version, is
+  written with theirs.
 - **Versions built so far** lists each version with its builds, whether it
   was deployed, how it was picked, and the commit.
 
