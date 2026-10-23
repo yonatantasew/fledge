@@ -1,6 +1,6 @@
 # fledge
 
-Build, install and release a Flutter app from a local web UI.
+Build, install, deploy and release Flutter apps from a local web UI.
 
 Pick the platforms, flavors and build types (debug / profile / release). fledge
 queues every combination, runs one Android and one iOS build at a time with

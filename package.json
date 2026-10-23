@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "MIT",
-  "description": "Build, install and release Flutter apps from a local web UI: flavors × build types for Android and iOS, device installs, and release notes drafted with Claude.",
+  "description": "Build, install, deploy and release Flutter apps from a local web UI: flavors × build types for Android and iOS, device installs, Slack deploys with notes, versions that only go up, and an assistant that works with any model.",
   "bin": {
     "fledge": "bin/fledge.js"
   },
