@@ -687,6 +687,7 @@ const assistantContext: ToolContext = {
     const r = p?.config?.release;
     if (!p || !r) throw new Error("releases aren't set up for this app");
     const all = await gatherFacts(p, since ?? (await releases(p))[0]?.tag ?? null, prerelease);
+    all.version = (await nextVersionFor(p, p.root)).version; // as the Release tab
     // As the Release tab does: version-bump PRs never go in the notes.
     const facts = { ...all, prerelease, prs: all.prs.filter((pr) => !pr.versionBump && !exclude.includes(pr.number)) };
     return {
@@ -1320,6 +1321,8 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
     if (req.method === "POST" && url.pathname === "/api/release/facts") {
       const baseTag = typeof body.baseTag === "string" && /^v[\w.+-]+$/.test(body.baseTag) ? body.baseTag : null;
       const facts = await gatherFacts(project, baseTag, body.prerelease !== false);
+      // The same next version as builds: the build number only goes up (versions.ts).
+      facts.version = (await nextVersionFor(project, project.root)).version;
       return send(res, 200, { facts, templates: { slack: templateSlack(facts), github: templateGithub(facts) } });
     }
 
