@@ -75,6 +75,16 @@ export interface DeployRoute {
   onFailure: "hold" | "post-built";
 }
 
+/**
+ * How build versions are picked. The build number only ever goes up, across
+ * version names, so a newer build always installs over an older one.
+ */
+export interface VersionsConfig {
+  basedOn: "highest" | "releases"; // the next version follows the highest seen anywhere, or only release tags
+  autoIncrement: boolean; // default for the build form's switch: each queue or deploy takes the next version
+  writePubspec: boolean; // default for the switch: also write it to pubspec.yaml and commit that
+}
+
 /** Extra flags passed through unchanged (e.g. --no-tree-shake-icons). */
 export interface ExtraArgs {
   all: string[];
@@ -100,6 +110,7 @@ export interface FledgeConfig {
   release: ReleaseConfig | null;
   ship: ShipConfig | null;
   deploy: DeployRoute[];
+  versions: VersionsConfig;
 }
 
 const NAME = /^[a-z][a-z0-9_]*$/;
@@ -265,6 +276,19 @@ export function parseConfig(raw: unknown): FledgeConfig {
     release: r.release === undefined ? null : parseRelease(r.release),
     ship: r.ship === undefined || r.ship === null ? null : parseShip(r.ship),
     deploy: r.deploy === undefined ? [] : parseDeploy(r.deploy, flavors.map((f) => f.name), toggles.map((t) => t.id)),
+    versions: parseVersions(r.versions),
+  };
+}
+
+function parseVersions(raw: unknown): VersionsConfig {
+  if (raw === undefined) return { basedOn: "highest", autoIncrement: false, writePubspec: false };
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) fail("versions", "must be an object");
+  const v = raw as Record<string, unknown>;
+  for (const k of ["autoIncrement", "writePubspec"]) if (v[k] !== undefined && typeof v[k] !== "boolean") fail(`versions.${k}`, "must be true or false");
+  return {
+    basedOn: (optStr(v.basedOn, "versions.basedOn", /^(highest|releases)$/) ?? "highest") as VersionsConfig["basedOn"],
+    autoIncrement: v.autoIncrement === true,
+    writePubspec: v.writePubspec === true,
   };
 }
 

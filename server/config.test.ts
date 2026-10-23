@@ -137,3 +137,11 @@ test("deploy.routes: builds by environment, options and a channel, all checked",
   assert.throws(() => parseConfig(route({ builds: Array(11).fill({ platform: "android", environment: "staging", mode: "release" }) })), /at most 10/);
   assert.throws(() => parseConfig({ ...base, deploy: { routes: [route({}).deploy.routes[0], route({}).deploy.routes[0]] } }), /unique/);
 });
+
+test("versions: based on the highest seen, switches off, unless set; checked", () => {
+  const base = { flavors: [{ name: "staging" }] };
+  assert.deepEqual(parseConfig(base).versions, { basedOn: "highest", autoIncrement: false, writePubspec: false });
+  assert.deepEqual(parseConfig({ ...base, versions: { basedOn: "releases", autoIncrement: true } }).versions, { basedOn: "releases", autoIncrement: true, writePubspec: false });
+  assert.throws(() => parseConfig({ ...base, versions: { basedOn: "tags" } }), /versions\.basedOn/);
+  assert.throws(() => parseConfig({ ...base, versions: { writePubspec: "yes" } }), /versions\.writePubspec/);
+});
