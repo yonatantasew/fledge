@@ -20,6 +20,7 @@ import { promisify } from "node:util";
 import { exportErrors, freshest, mismatch, pinnedVersion } from "./collect.ts";
 import { artifactPath, parseRequest, planBuild, resolveFlutter, XCARCHIVE_PATH, type PlannedBuild, type SkippedBuild } from "./commands.ts";
 import { generateCommands, tokenize } from "./templates.ts";
+import { flutterRoot, profileIpaBlocked, readSdk, xcodeMajor } from "./toolchain.ts";
 import { cancelLogin, firebaseStatus, onFirebaseChange, startLogin } from "./firebase.ts";
 import { bumpValues, templateDeploy, templateGithub, templateSlack, type ReleaseFacts } from "./notes.ts";
 import { changesBetween, connections, gatherFacts, notesRequest, publish, releases, validatePublish } from "./release.ts";
@@ -781,6 +782,25 @@ const assistantContext: ToolContext = {
   },
 };
 
+// The plan preview reruns as the form changes; the SDK and Xcode rarely do.
+const profileIpaChecks = new Map<string, { at: number; reason: Promise<string | null> }>();
+
+/** Why this checkout's toolchain can't archive a profile IPA (see toolchain.ts), or null. */
+function profileIpaReason(flutter: string[], checkout: string): Promise<string | null> {
+  const key = `${flutter.join(" ")}\n${checkout}`;
+  const hit = profileIpaChecks.get(key);
+  if (hit && Date.now() - hit.at < 60_000) return hit.reason;
+  const reason = (async () => {
+    const root = await flutterRoot(flutter, checkout);
+    if (!root) return null;
+    const { backend, version } = await readSdk(root);
+    const xcode = await run("xcodebuild", ["-version"]).then((r) => xcodeMajor(r.stdout), () => null);
+    return profileIpaBlocked(backend, xcode, version);
+  })().catch(() => null);
+  profileIpaChecks.set(key, { at: Date.now(), reason });
+  return reason;
+}
+
 async function plan(body: unknown) {
   const u = await usableProject((body as Record<string, unknown> | null)?.project);
   if ("error" in u) return u;
@@ -795,7 +815,9 @@ async function plan(body: unknown) {
   const skipped: SkippedBuild[] = [];
   for (const t of parsed.targets) {
     const r = planBuild(t, parsed.options, info.sha, project.config, flutter);
-    if ("build" in r) builds.push(r.build);
+    const blocked = "build" in r && r.build.artifact === "ipa" && r.build.mode === "profile" ? await profileIpaReason(flutter, checkout) : null;
+    if (blocked) skipped.push({ ...t, reason: blocked });
+    else if ("build" in r) builds.push(r.build);
     else skipped.push(r.skipped);
   }
   const pubGetTemplate = (project.config.commands ?? generateCommands(project.config)).pubGet;
