@@ -17,6 +17,7 @@ import { appendFile, cp, mkdir, readdir, readFile, rename, stat, writeFile } fro
 import http from "node:http";
 import path from "node:path";
 import { promisify } from "node:util";
+import { exportErrors, freshest } from "./collect.ts";
 import { artifactPath, parseRequest, planBuild, resolveFlutter, XCARCHIVE_PATH, type PlannedBuild, type SkippedBuild } from "./commands.ts";
 import { generateCommands, tokenize } from "./templates.ts";
 import { cancelLogin, firebaseStatus, onFirebaseChange, startLogin } from "./firebase.ts";
@@ -417,11 +418,17 @@ async function collect(job: Job) {
     const newest = times.sort((a, b) => b.t - a.t)[0];
     if (newest && newest.t >= (job.startedAt ?? 0)) src = path.join(dir, newest.f);
   }
+  // This attempt's `flutter build` start: anything older in build/ is another build's.
+  const built = job.steps?.findLast((s) => s.id === "build")?.startedAt ?? job.startedAt ?? 0;
   if (job.artifact === "ipa") {
-    const ipas = (await readdir(src)).filter((f) => f.endsWith(".ipa"));
-    if (ipas.length === 0) throw new Error(`no .ipa in ${src}`);
-    const withTimes = await Promise.all(ipas.map(async (f) => ({ f, t: (await stat(path.join(src, f))).mtimeMs })));
-    src = path.join(src, withTimes.sort((a, b) => b.t - a.t)[0].f);
+    const ipas = (await readdir(src).catch(() => [] as string[])).filter((f) => f.endsWith(".ipa"));
+    const written = await Promise.all(ipas.map(async (f) => ({ name: f, mtime: (await stat(path.join(src, f))).mtimeMs })));
+    const ipa = freshest(written, built);
+    if (!ipa) {
+      const why = exportErrors(logs.get(job.id) ?? "");
+      throw new Error(`flutter build ipa exported no IPA${why.length ? `: ${why.join("; ")}` : ` into ${src}`}`);
+    }
+    src = path.join(src, ipa);
   }
   const ext = path.extname(src);
   const abi = job.command.includes("--target-platform android-arm64") ? "-arm64" : "";
@@ -437,7 +444,8 @@ async function collect(job: Job) {
     // The archive `flutter build ipa` made on the way: open it in Organizer to
     // Distribute without re-archiving in Xcode (and without any config step).
     const archive = path.join(job.checkout, XCARCHIVE_PATH);
-    if (existsSync(archive)) {
+    const archived = await stat(path.join(archive, "Info.plist")).then((s) => s.mtimeMs, () => 0);
+    if (archived >= built) {
       job.xcarchive = path.join(job.archiveDir!, `ios-${job.flavor}-${job.mode}.xcarchive`);
       await cp(archive, job.xcarchive, { recursive: true, verbatimSymlinks: true });
     }
