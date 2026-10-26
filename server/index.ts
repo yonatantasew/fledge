@@ -17,7 +17,7 @@ import { appendFile, cp, mkdir, readdir, readFile, rename, stat, writeFile } fro
 import http from "node:http";
 import path from "node:path";
 import { promisify } from "node:util";
-import { exportErrors, freshest } from "./collect.ts";
+import { exportErrors, freshest, mismatch, pinnedVersion } from "./collect.ts";
 import { artifactPath, parseRequest, planBuild, resolveFlutter, XCARCHIVE_PATH, type PlannedBuild, type SkippedBuild } from "./commands.ts";
 import { generateCommands, tokenize } from "./templates.ts";
 import { cancelLogin, firebaseStatus, onFirebaseChange, startLogin } from "./firebase.ts";
@@ -453,6 +453,10 @@ async function collect(job: Job) {
 
   job.verified = await verify(job, dest).catch((e) => ({ error: String(e.message ?? e) }));
   await log(job, `\nArchived ${dest}\nVerified: ${JSON.stringify(job.verified)}\n`);
+  // Failing here keeps it from being installed or shipped as the build it isn't.
+  const config = (await getProject(job.project))?.config ?? null;
+  const wrong = mismatch(job.verified, { bundleId: bundleIdOf(job, config), version: pinnedVersion(argvs.get(job.id)!) });
+  if (wrong) throw new Error(wrong);
 }
 
 

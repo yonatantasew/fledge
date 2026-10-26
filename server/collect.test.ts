@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { exportErrors, freshest } from "./collect.ts";
+import { exportErrors, freshest, mismatch, pinnedVersion } from "./collect.ts";
 
 test("picks the newest file written since the build started", () => {
   const files = [
@@ -34,4 +34,27 @@ test("reads Xcode's export errors once each, in order", () => {
   ].join("\n");
   assert.deepEqual(exportErrors(log), ["No Accounts", 'No signing certificate "iOS Distribution" found']);
   assert.deepEqual(exportErrors("Built build/ios/ipa/App.ipa"), []);
+});
+
+test("a version counts as pinned only when the command gives both halves", () => {
+  assert.equal(pinnedVersion(["flutter", "build", "ipa", "--build-name=1.3.1", "--build-number=57"]), "1.3.1+57");
+  assert.equal(pinnedVersion(["flutter", "build", "ipa", "--build-name=1.3.1"]), undefined);
+  assert.equal(pinnedVersion(["flutter", "build", "ipa"]), undefined);
+});
+
+test("another flavor's app is caught by its bundle id, a stale one by its version", () => {
+  assert.equal(
+    mismatch({ bundleId: "com.example.app", version: "1.2.16+56" }, { bundleId: "com.example.app.uat", version: "1.3.1+57" }),
+    "the artifact is com.example.app 1.2.16+56, but this build is com.example.app.uat 1.3.1+57",
+  );
+  assert.equal(
+    mismatch({ bundleId: "com.example.app", version: "1.2.16+56" }, { bundleId: "com.example.app" }),
+    null,
+  );
+});
+
+test("what the config or the read-back doesn't say is not held against the build", () => {
+  assert.equal(mismatch({ bundleId: "com.example.app", version: "1.3.1+57" }, { bundleId: "com.example.app", version: "1.3.1+57" }), null);
+  assert.equal(mismatch({}, { bundleId: "com.example.app" }), null);
+  assert.equal(mismatch({ bundleId: "com.example.app" }, {}), null);
 });
