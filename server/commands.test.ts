@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { artifactPath, parseRequest, planBuild, resolveFlutter, type BuildOptions } from "./commands.ts";
+import { artifactPath, parseRequest, planBuild, resolveFlutter, templateFor, type BuildOptions } from "./commands.ts";
 import { parseConfig } from "./config.ts";
 
 const cfg = parseConfig({
@@ -198,4 +198,31 @@ test("written-out commands run exactly as written, with placeholders filled in",
 test("{flutter} expands to the app's Flutter command", () => {
   const b = planBuild({ platform: "android", flavor: "staging", mode: "debug" }, base, "abc", cfg, ["fvm", "flutter"]);
   assert.ok("build" in b && b.build.argv[0] === "fvm" && b.build.argv[1] === "flutter" && b.build.argv[2] === "build");
+});
+
+test("an environment's own command replaces the shared one for that output only", () => {
+  const c = parseConfig({
+    flavors: [
+      { name: "staging" },
+      { name: "prod", commands: { android: { apk: "{flutter} build apk --{mode} --flavor prod --obfuscate {options}" }, ios: { app: "{flutter} build ios --{mode} --flavor prod" } } },
+    ],
+    commands: { android: { apk: "{flutter} build apk --{mode} --flavor {flavor} {options}" } },
+  });
+  assert.deepEqual(plan({ platform: "android", flavor: "prod", mode: "release" }, {}, c).argv, ["flutter", "build", "apk", "--release", "--flavor", "prod", "--obfuscate"]);
+  assert.deepEqual(plan({ platform: "android", flavor: "staging", mode: "release" }, {}, c).argv, ["flutter", "build", "apk", "--release", "--flavor", "staging"]);
+  // An output only prod has is built for prod alone.
+  assert.deepEqual(plan({ platform: "ios", flavor: "prod", mode: "release" }, { iosArtifact: "app" }, c).argv, ["flutter", "build", "ios", "--release", "--flavor", "prod"]);
+  const r = planBuild({ platform: "ios", flavor: "staging", mode: "release" }, { ...base, iosArtifact: "app" }, "abc", c);
+  assert.ok("skipped" in r && /for all environments or for staging/.test(r.skipped.reason));
+  assert.deepEqual(templateFor(c, c.flavors[1], "android", "apk")?.own, true);
+  assert.deepEqual(templateFor(c, c.flavors[0], "android", "apk")?.own, false);
+});
+
+test("an environment's own commands are checked against that environment", () => {
+  assert.throws(() => parseConfig({ flavors: [{ name: "a", flavor: null, commands: { android: { apk: "flutter build apk --flavor {flavor}" } } }] }), /flavors\[0\]\.commands\.android\.apk: uses \{flavor\}/);
+  assert.throws(() => parseConfig({ flavors: [{ name: "a", commands: { web: {} } }] }), /flavors\[0\]\.commands\.web: use android or ios/);
+  assert.throws(() => parseConfig({ flavors: [{ name: "a", commands: { ios: { exe: "x" } } }] }), /unknown output/);
+  // {API_URL} is fine where only this environment's vars have to define it.
+  const c = parseConfig({ flavors: [{ name: "a", vars: { API_URL: "x" }, commands: { android: { apk: "flutter build apk --dart-define=URL={API_URL}" } } }, { name: "b" }] });
+  assert.equal(c.flavors[0].commands.android.apk, "flutter build apk --dart-define=URL={API_URL}");
 });

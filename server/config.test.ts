@@ -16,6 +16,7 @@ test("fills defaults from the flavor name", () => {
     iosId: undefined,
     xcodeScheme: "Staging",
     confirm: false,
+    commands: { android: {}, ios: {} },
   });
   assert.equal(c.flavorDefine, "FLAVOR");
   assert.equal(c.gitShaDefine, "GIT_SHA");

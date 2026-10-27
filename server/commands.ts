@@ -6,8 +6,8 @@
 // regex-checked strings; the result is passed to spawn() as argv, never to a
 // shell. Kept pure so the rules are unit-tested.
 
-import { fill, type FledgeConfig } from "./config.ts";
-import { expand, generateCommands } from "./templates.ts";
+import { fill, type FlavorConfig, type FledgeConfig } from "./config.ts";
+import { expand, generateCommands, type Output } from "./templates.ts";
 
 export const PLATFORMS = ["android", "ios"] as const;
 export const ARM64_ONLY_FLAG = "android-arm64";
@@ -106,6 +106,14 @@ export function parseRequest(
  * Plans one target. `gitSha` is the checkout's HEAD, passed as the configured
  * git-sha define so a local build can be told apart from a CI one.
  */
+/** The command line `env` builds `output` with: its own if it has one, else the shared one. */
+export function templateFor(cfg: FledgeConfig, env: FlavorConfig, platform: Platform, output: Output): { template: string; own: boolean } | null {
+  const own = (env.commands[platform] as Record<string, string | undefined>)[output];
+  if (own) return { template: own, own: true };
+  const shared = ((cfg.commands ?? generateCommands(cfg))[platform] as Record<string, string | undefined>)[output];
+  return shared ? { template: shared, own: false } : null;
+}
+
 export function planBuild(
   t: Target,
   o: BuildOptions,
@@ -123,9 +131,8 @@ export function planBuild(
     return { skipped: { ...t, reason: "an IPA can't be exported from a debug build — choose .app for debug" } };
   }
 
-  const templates = cfg.commands ?? generateCommands(cfg);
-  const template = (templates[t.platform] as Record<string, string | undefined>)[artifact];
-  if (!template) return { skipped: { ...t, reason: `the config has no commands.${t.platform}.${artifact}` } };
+  const template = templateFor(cfg, env, t.platform, artifact)?.template;
+  if (!template) return { skipped: { ...t, reason: `the config has no commands.${t.platform}.${artifact}, for all environments or for ${t.flavor}` } };
 
   // {options}: the switches ticked in the form.
   const options: string[] = [];

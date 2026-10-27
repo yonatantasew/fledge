@@ -23,7 +23,12 @@ export interface FlavorConfig {
   iosId?: string; // bundle identifier
   xcodeScheme: string; // for "Prepare Xcode"
   confirm: boolean; // ask twice before building it (e.g. production)
+  // This environment's own command lines, used instead of the shared `commands`
+  // for those outputs; an output only listed here is built for it alone.
+  commands: EnvCommands;
 }
+
+export type EnvCommands = { android: Partial<Record<"apk" | "appbundle", string>>; ios: Partial<Record<"ipa" | "app" | "xcode", string>> };
 
 export interface ToggleConfig {
   id: string;
@@ -215,7 +220,7 @@ export function parseConfig(raw: unknown): FledgeConfig {
     const o = (f ?? {}) as Record<string, unknown>;
     const name = str(o.name, `${w}.name`, NAME);
     const flavor = o.flavor === null ? null : (optStr(o.flavor, `${w}.flavor`, /^[A-Za-z][A-Za-z0-9_]*$/) ?? name);
-    return {
+    const env: FlavorConfig = {
       name,
       flavor,
       target: o.target === undefined ? undefined : relPath(o.target, `${w}.target`),
@@ -229,7 +234,10 @@ export function parseConfig(raw: unknown): FledgeConfig {
       xcodeScheme:
         optStr(o.xcodeScheme, `${w}.xcodeScheme`, SCHEME) ?? (flavor ? flavor.charAt(0).toUpperCase() + flavor.slice(1) : "Runner"),
       confirm: o.confirm === true,
+      commands: { android: {}, ios: {} },
     };
+    env.commands = parseEnvCommands(o.commands, `${w}.commands`, env);
+    return env;
   });
   const names = flavors.map((f) => f.name);
   if (new Set(names).size !== names.length) fail("flavors", "names must be unique");
@@ -382,7 +390,7 @@ function parseCommands(raw: unknown, flavors: FlavorConfig[]): CommandTemplates 
     if (problems.length) fail(where, problems.join("; "));
     return v;
   };
-  const section = (name: "android" | "ios", outputs: readonly string[]) => {
+  const section = (name: keyof typeof OUTPUTS, outputs: readonly string[]) => {
     const o = r[name];
     if (o === undefined) return {};
     if (typeof o !== "object" || o === null || Array.isArray(o)) fail(`commands.${name}`, "must be an object");
@@ -395,9 +403,31 @@ function parseCommands(raw: unknown, flavors: FlavorConfig[]): CommandTemplates 
   };
   return {
     pubGet: r.pubGet === null ? null : (check(r.pubGet, "commands.pubGet", ["flutter"]) ?? "{flutter} pub get"),
-    android: section("android", ["apk", "appbundle"]),
-    ios: section("ios", ["ipa", "app", "xcode"]),
+    android: section("android", OUTPUTS.android),
+    ios: section("ios", OUTPUTS.ios),
   };
+}
+
+/** An environment's own command lines, checked against that environment alone. */
+function parseEnvCommands(raw: unknown, where: string, env: FlavorConfig): EnvCommands {
+  const out: EnvCommands = { android: {}, ios: {} };
+  if (raw === undefined) return out;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) fail(where, "must be an object with android and/or ios");
+  for (const [platform, section] of Object.entries(raw)) {
+    const outputs = OUTPUTS[platform as keyof typeof OUTPUTS];
+    if (!outputs) fail(`${where}.${platform}`, "use android or ios");
+    if (typeof section !== "object" || section === null || Array.isArray(section)) fail(`${where}.${platform}`, "must be an object");
+    for (const [k, v] of Object.entries(section)) {
+      const w = `${where}.${platform}.${k}`;
+      if (!(outputs as readonly string[]).includes(k)) fail(w, `unknown output; use ${outputs.join(", ")}`);
+      if (typeof v !== "string") fail(w, "must be a command line (a string)");
+      if (v.length > 4000) fail(w, "is too long");
+      const problems = templateProblems(v, [env]);
+      if (problems.length) fail(w, problems.join("; "));
+      (out[platform as keyof EnvCommands] as Record<string, string>)[k] = v;
+    }
+  }
+  return out;
 }
 
 function parseRelease(raw: unknown): ReleaseConfig {
@@ -443,6 +473,8 @@ function parseRelease(raw: unknown): ReleaseConfig {
     team,
   };
 }
+
+const OUTPUTS = { android: ["apk", "appbundle"], ios: ["ipa", "app", "xcode"] } as const;
 
 export { fill } from "./template.ts";
 import { INLINE, templateProblems, WHOLE, type CommandTemplates } from "./templates.ts";

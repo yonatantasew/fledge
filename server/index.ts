@@ -594,7 +594,8 @@ const assistantContext: ToolContext = {
       source: p.source,
       error: p.error,
       config: p.config && {
-        flavors: p.config.flavors.map(({ name, label, flavor, target, confirm }) => ({ name, label, flavor, target, confirm })),
+        // `commands` per environment: its own lines, which replace the shared ones below.
+        flavors: p.config.flavors.map(({ name, label, flavor, target, confirm, commands }) => ({ name, label, flavor, target, confirm, commands })),
         toggles: p.config.toggles.map(({ id, label }) => ({ id, label })),
         commands: p.config.commands ?? generateCommands(p.config),
         deploy: p.config.deploy,
