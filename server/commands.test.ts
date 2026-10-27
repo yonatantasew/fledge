@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { artifactPath, parseRequest, planBuild, resolveFlutter, templateFor, type BuildOptions } from "./commands.ts";
+import { artifactPath, parseRequest, planBuild, previewCommands, resolveFlutter, templateFor, type BuildOptions } from "./commands.ts";
 import { parseConfig } from "./config.ts";
 
 const cfg = parseConfig({
@@ -225,4 +225,19 @@ test("an environment's own commands are checked against that environment", () =>
   // {API_URL} is fine where only this environment's vars have to define it.
   const c = parseConfig({ flavors: [{ name: "a", vars: { API_URL: "x" }, commands: { android: { apk: "flutter build apk --dart-define=URL={API_URL}" } } }, { name: "b" }] });
   assert.equal(c.flavors[0].commands.android.apk, "flutter build apk --dart-define=URL={API_URL}");
+});
+
+test("previews every environment's commands as a build runs them, the form's choices left as placeholders", () => {
+  const c = parseConfig({
+    flavors: [{ name: "staging" }, { name: "prod", commands: { android: { apk: "{flutter} build apk --{mode} --flavor prod {options}" } } }],
+    commands: { android: { apk: "{flutter} build apk --{mode} --flavor {flavor} --dart-define=GIT_SHA={sha} {options} {version}" }, ios: { ipa: "{flutter} build ipa --{mode} --export-method={exportMethod}" } },
+  });
+  const p = previewCommands(c, "release", "abc1234", ["fvm", "flutter"]);
+  const at = (env: string, output: string) => p.find((x) => x.environment === env && x.output === output)!;
+  assert.deepEqual(at("staging", "apk").argv, ["fvm", "flutter", "build", "apk", "--release", "--flavor", "staging", "--dart-define=GIT_SHA=abc1234", "{options}", "{version}"]);
+  assert.equal(at("staging", "apk").own, false);
+  assert.deepEqual(at("prod", "apk"), { environment: "prod", platform: "android", output: "apk", template: "{flutter} build apk --{mode} --flavor prod {options}", own: true, shared: "{flutter} build apk --{mode} --flavor {flavor} --dart-define=GIT_SHA={sha} {options} {version}", argv: ["fvm", "flutter", "build", "apk", "--release", "--flavor", "prod", "{options}"] });
+  assert.deepEqual(at("prod", "ipa").argv, ["fvm", "flutter", "build", "ipa", "--release", "--export-method={exportMethod}"]);
+  assert.deepEqual(at("prod", "appbundle"), { environment: "prod", platform: "android", output: "appbundle", template: null, own: false, shared: null, argv: null });
+  assert.equal(p.length, 2 * 5);
 });

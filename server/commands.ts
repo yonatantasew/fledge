@@ -202,3 +202,34 @@ export function resolveFlutter(
   if (has.puroConfig) return ["puro", "flutter"];
   return ["flutter"];
 }
+
+export interface CommandPreview {
+  environment: string;
+  platform: Platform;
+  output: Output;
+  template: string | null; // what it runs; null: no command for this output, shared or own
+  own: boolean;
+  shared: string | null; // the shared command, used when it has no own one
+  argv: string[] | null;
+}
+
+const OUTPUTS: { platform: Platform; output: Output }[] = [
+  ...ANDROID_ARTIFACTS.map((output) => ({ platform: "android" as const, output })),
+  ...IOS_ARTIFACTS.map((output) => ({ platform: "ios" as const, output })),
+];
+
+/**
+ * Every environment's command for every output, as a `mode` build runs it.
+ * What the build form decides per build ({options}, {version}, the export
+ * method) is left as the placeholder.
+ */
+export function previewCommands(cfg: FledgeConfig, mode: Mode, gitSha: string, flutter: string[]): CommandPreview[] {
+  return cfg.flavors.flatMap((env) =>
+    OUTPUTS.map(({ platform, output }) => {
+      const t = templateFor(cfg, env, platform, output);
+      const shared = ((cfg.commands ?? generateCommands(cfg))[platform] as Record<string, string | undefined>)[output] ?? null;
+      const argv = t && expand(t.template, { flutter, mode, env, sha: gitSha, exportMethod: "{exportMethod}", options: ["{options}"], version: ["{version}"] });
+      return { environment: env.name, platform, output, template: t?.template ?? null, own: t?.own ?? false, shared, argv };
+    }),
+  );
+}

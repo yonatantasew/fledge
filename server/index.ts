@@ -18,7 +18,7 @@ import http from "node:http";
 import path from "node:path";
 import { promisify } from "node:util";
 import { exportErrors, freshest, mismatch, pinnedVersion } from "./collect.ts";
-import { artifactPath, parseRequest, planBuild, resolveFlutter, XCARCHIVE_PATH, type PlannedBuild, type SkippedBuild } from "./commands.ts";
+import { artifactPath, MODES, parseRequest, planBuild, previewCommands, resolveFlutter, XCARCHIVE_PATH, type Mode, type PlannedBuild, type SkippedBuild } from "./commands.ts";
 import { generateCommands, tokenize } from "./templates.ts";
 import { flutterRoot, profileIpaBlocked, readSdk, xcodeMajor } from "./toolchain.ts";
 import { cancelLogin, firebaseStatus, onFirebaseChange, startLogin } from "./firebase.ts";
@@ -1391,6 +1391,23 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
     for (const k of ["flavorDefine", "gitShaDefine", "defines", "defineFiles", "args"]) delete out[k];
     out.commands = config.commands ?? generateCommands(config);
     return send(res, 200, { config: out });
+  }
+
+  // The config dialog's command preview: the config as edited, not yet saved.
+  const previewRoute = /^\/api\/projects\/([a-z0-9-]+)\/commands\/preview$/.exec(url.pathname);
+  if (previewRoute && req.method === "POST") {
+    const project = await getProject(previewRoute[1]);
+    if (!project) return send(res, 404, { error: "unknown app" });
+    const raw = (await readJson(req)) as { config?: unknown; mode?: unknown };
+    const mode = (MODES as readonly unknown[]).includes(raw.mode) ? (raw.mode as Mode) : "release";
+    let config: FledgeConfig;
+    try {
+      config = parseConfig(raw.config);
+    } catch (e) {
+      return send(res, 400, { error: (e as Error).message });
+    }
+    const sha = await git(project.root, "rev-parse", "--short=8", "HEAD").catch(() => "{sha}");
+    return send(res, 200, { mode, sha, commands: previewCommands(config, mode, sha, flutterFor(config, project.root)) });
   }
 
   const projectRoute = /^\/api\/projects\/([a-z0-9-]+)(\/config)?$/.exec(url.pathname);
