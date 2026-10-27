@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+import { ConfigEditor } from "./ConfigEditor";
 import { DetectionNotes } from "./DetectionNotes";
 
 /** Register a Flutter app: pick its folder, review the detected config, save. */
@@ -140,16 +140,7 @@ export function AddAppDialog({
               <Input id="app-name" value={name} onChange={(e) => setName(e.target.value)} />
             </div>
             <DetectionNotes notes={detected.notes} />
-            <div className="space-y-1.5">
-              <Label htmlFor="app-config">Config (fledge.json format)</Label>
-              <Textarea
-                id="app-config"
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-                className="min-h-72 font-mono text-xs leading-relaxed"
-                spellCheck={false}
-              />
-            </div>
+            <ConfigEditor text={text} onChange={setText} />
           </div>
         )}
 
