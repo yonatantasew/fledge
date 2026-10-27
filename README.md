@@ -157,6 +157,19 @@ placeholder that an environment can't fill, such as `{flavor}` for an
 environment without a flavor, is an error that names the command and the
 environment.
 
+**One environment needs a different command?** Give it its own under that
+environment's `commands`, which replaces the shared one for those outputs:
+
+```json
+{ "name": "prod", "commands": { "ios": { "ipa": "{flutter} build ipa --{mode} --flavor prod --obfuscate {options} --export-method={exportMethod} {version} --no-pub" } } }
+```
+
+An output only an environment lists is built for that environment alone. In
+the config's Settings, each environment's **Build commands** shows the exact
+line every output runs for it, shared or its own, expanded with the app's
+Flutter command and commit. **Use its own command** copies the shared line
+there to edit; **Back to shared** removes it again.
+
 `pubGet` runs once per checkout before its builds, so builds running side by
 side don't both resolve dependencies. That's why the build commands end with
 `--no-pub`. Set `"pubGet": null` to skip it.
