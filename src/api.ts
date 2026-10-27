@@ -379,6 +379,19 @@ async function send<T>(method: string, url: string, body?: unknown): Promise<T> 
   return data as T;
 }
 
+/** One environment's command for one output, as the server expands it (see previewCommands). */
+export interface CommandPreview {
+  environment: string;
+  platform: "android" | "ios";
+  output: "apk" | "appbundle" | "ipa" | "app" | "xcode";
+  template: string | null;
+  own: boolean;
+  shared: string | null;
+  argv: string[] | null;
+}
+
+export type BuildMode = "debug" | "profile" | "release";
+
 export const projectsApi = {
   list: () => send<ProjectSummary[]>("GET", "/api/projects"),
   candidates: () => send<string[]>("GET", "/api/projects/candidates"),
@@ -388,6 +401,8 @@ export const projectsApi = {
   config: (id: string) => send<ConfigFile>("GET", `/api/projects/${id}/config`),
   saveConfig: (id: string, config: unknown) => send<{ file: string }>("PUT", `/api/projects/${id}/config`, { config }),
   writeCommands: (id: string, config: unknown) => post<{ config: Record<string, unknown> }>(`/api/projects/${id}/commands`, { config }),
+  previewCommands: (id: string, config: unknown, mode: BuildMode) =>
+    post<{ mode: BuildMode; sha: string; commands: CommandPreview[] }>(`/api/projects/${id}/commands/preview`, { config, mode }),
 };
 
 /** Lines the server streams while a release is being published. */

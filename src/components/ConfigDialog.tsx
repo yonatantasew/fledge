@@ -141,6 +141,7 @@ export function ConfigDialog({
         <DetectionNotes notes={notes} />
 
         <ConfigEditor
+          appId={app.id}
           text={text}
           onChange={setText}
           busy={detecting ? "Detecting…" : undefined}

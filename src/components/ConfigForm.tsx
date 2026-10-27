@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { EnvCommands, type CommandsPreview } from "./EnvCommands";
 
 type Path = (string | number)[];
 type Edit = (path: Path, value: unknown) => void;
@@ -27,7 +28,7 @@ const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const text = (v: unknown) => (typeof v === "string" ? v : "");
 
 /** The everyday settings of an app's config as fields. Everything else stays in Advanced, untouched. */
-export function ConfigForm({ value, onChange }: { value: Obj; onChange: (next: Obj) => void }) {
+export function ConfigForm({ value, onChange, commands }: { value: Obj; onChange: (next: Obj) => void; commands?: CommandsPreview }) {
   const edit: Edit = (path, v) => onChange(setIn(value, path, v));
   const flavors = (getIn(value, ["flavors"]) as Obj[] | undefined) ?? [];
   const toggles = (getIn(value, ["toggles"]) as Obj[] | undefined) ?? [];
@@ -42,7 +43,7 @@ export function ConfigForm({ value, onChange }: { value: Obj; onChange: (next: O
       <Section title="Environments" hint="What the app is built for, such as staging and production. Each one is a row in the build form.">
         <div className="space-y-3">
           {flavors.map((f, i) => (
-            <Environment key={i} env={f} at={["flavors", i]} edit={edit} onRemove={flavors.length > 1 ? () => onChange(removeAt(value, ["flavors"], i)) : undefined} />
+            <Environment key={i} env={f} at={["flavors", i]} edit={edit} commands={commands} onRemove={flavors.length > 1 ? () => onChange(removeAt(value, ["flavors"], i)) : undefined} />
           ))}
           <Button variant="outline" size="sm" onClick={() => edit(["flavors", flavors.length], { name: `env${flavors.length + 1}` })}>
             <HugeiconsIcon icon={Add01Icon} className="size-4" />
@@ -155,11 +156,11 @@ function FlutterSelect({ value, onChange }: { value: unknown; onChange: (v: stri
   );
 }
 
-function Environment({ env, at, edit, onRemove }: { env: Obj; at: Path; edit: Edit; onRemove?: () => void }) {
+function Environment({ env, at, edit, commands, onRemove }: { env: Obj; at: Path; edit: Edit; commands?: CommandsPreview; onRemove?: () => void }) {
   const name = text(env.name);
   const noFlavor = env.flavor === null;
   const flavor = noFlavor ? "" : text(env.flavor) || name;
-  const more = otherKeys(env, ENV_FIELDS);
+  const more = otherKeys(env, commands ? [...ENV_FIELDS, "commands"] : ENV_FIELDS);
   return (
     <div className="space-y-3 rounded-lg border p-3">
       <div className="flex items-start justify-between gap-2">
@@ -198,6 +199,7 @@ function Environment({ env, at, edit, onRemove }: { env: Obj; at: Path; edit: Ed
         checked={env.confirm === true}
         onChange={(v) => edit([...at, "confirm"], v || undefined)}
       />
+      {commands && <EnvCommands name={name} env={env} at={at} edit={edit} preview={commands} />}
       {more.length > 0 && <AlsoIn keys={more} />}
     </div>
   );
@@ -257,7 +259,7 @@ function AdvancedOnly({ value }: { value: Obj }) {
   const items: string[] = [];
   const routes = getIn(value, ["deploy", "routes"]);
   if (Array.isArray(routes) && routes.length) items.push(`${routes.length} deploy route${routes.length > 1 ? "s" : ""}`);
-  if (getIn(value, ["commands"])) items.push("build commands");
+  if (getIn(value, ["commands"])) items.push("the shared build commands");
   const team = getIn(value, ["release", "team"]);
   if (team && typeof team === "object" && Object.keys(team).length) items.push("team names for notes");
   if (getIn(value, ["release", "versionBump"])) items.push("the version bump branch and PR");
