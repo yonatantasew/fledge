@@ -5,7 +5,7 @@ import { projectsApi, type ConfigFile, type ProjectSummary } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Textarea } from "@/components/ui/textarea";
+import { ConfigEditor } from "./ConfigEditor";
 import { DetectionNotes } from "./DetectionNotes";
 
 const SOURCE: Record<NonNullable<ConfigFile["source"]>, string> = {
@@ -140,16 +140,13 @@ export function ConfigDialog({
 
         <DetectionNotes notes={notes} />
 
-        <Textarea
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder={detecting ? "Detecting…" : ""}
-          className="min-h-80 font-mono text-xs leading-relaxed"
-          spellCheck={false}
+        <ConfigEditor
+          text={text}
+          onChange={setText}
+          busy={detecting ? "Detecting…" : undefined}
+          advancedFooter={<CommandsHelp hasCommands={/"commands"\s*:/.test(text)} onWriteOut={() => void writeOut()} busy={writing} />}
         />
         {error && <p className="text-sm whitespace-pre-wrap text-destructive">{error}</p>}
-
-        <CommandsHelp hasCommands={/"commands"\s*:/.test(text)} onWriteOut={() => void writeOut()} busy={writing} />
 
         <DialogFooter className="sm:justify-between">
           <div className="flex gap-2">
@@ -184,7 +181,7 @@ function CommandsHelp({ hasCommands, onWriteOut, busy }: { hasCommands: boolean;
         <div className="flex items-start justify-between gap-3">
           <p>
             This config has no <code className="font-mono">"commands"</code> yet, so fledge builds the commands from the
-            settings above. Write them out to see and edit the exact commands.
+            other settings. Write them out to see and edit the exact commands.
           </p>
           <Button size="sm" variant="outline" className="shrink-0" onClick={onWriteOut} disabled={busy}>
             {busy ? "Writing…" : "Write out commands"}
