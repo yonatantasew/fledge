@@ -76,7 +76,11 @@ and suggests a config, with a note for everything it found or guessed:
 - team names, from the GitHub profiles of recent PR authors
 
 You review and edit it before saving. The gear button edits it later, or
-detects it again.
+detects it again. **Settings** shows the everyday parts as fields:
+environments, versions, Slack, releases and build switches. **Advanced**
+shows the whole config as JSON, for build commands, defines, deploy routes
+and the rest. Both edit the same config, so what the form doesn't show is
+kept as written.
 
 Each app's config is the first of these that exists:
 
@@ -159,7 +163,7 @@ side don't both resolve dependencies. That's why the build commands end with
 
 **No `commands` yet?** fledge generates them from `flavorDefine`,
 `gitShaDefine`, `defines`, `defineFiles` and `args`, so older configs keep
-working. **Write out commands** in the config dialog puts the generated lines
+working. **Write out commands**, under the config's Advanced tab, puts the generated lines
 into the config for editing, and removes those fields. New apps get their
 commands written out when they're added.
 
