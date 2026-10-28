@@ -65,6 +65,15 @@ test("release defaults are neutral", () => {
   assert.equal(c.release?.channel, "Release");
 });
 
+test("a team entry can carry a Slack member ID", () => {
+  const release = (team: object) => ({ flavors: [{ name: "a" }], release: { github: { repo: "o/r" }, team } });
+  const c = parseConfig(release({ alice: "Alice", bob: { name: "Bob B", slack: "U012ABCDE" }, carol: { name: "Carol" } }));
+  assert.deepEqual(c.release?.team, { alice: "Alice", bob: "Bob B", carol: "Carol" });
+  assert.deepEqual(c.release?.slack, { bob: "U012ABCDE" });
+  assert.throws(() => parseConfig(release({ bob: { name: "Bob", slack: "@bob" } })), /release\.team\.bob\.slack/);
+  assert.throws(() => parseConfig(release({ bob: { slack: "U012ABCDE" } })), /release\.team\.bob\.name/);
+});
+
 test("fill leaves unknown placeholders alone", () => {
   assert.equal(fill("{tag} on {branch} {nope}", { tag: "v1.0.0+1", branch: "main" }), "v1.0.0+1 on main {nope}");
 });

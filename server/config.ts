@@ -45,6 +45,7 @@ export interface ReleaseConfig {
   versionBump: { branch: string; commitMessage: string; prTitle: string; prBody: string[] };
   jira?: { site: string; fromStatus: string; toStatus: string };
   team: Record<string, string>; // GitHub login → name used in notes
+  slack: Record<string, string>; // GitHub login → Slack member ID, for real mentions in posted notes
 }
 
 /** Where finished builds are shipped. The Slack bot token is per Mac, in the keychain, not here. */
@@ -125,6 +126,7 @@ const APP_ID = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_-]+)+$/;
 const SCHEME = /^[A-Za-z0-9 _.-]+$/;
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const LOGIN = /^[A-Za-z0-9-]+$/;
+const SLACK_MEMBER = /^[UW][A-Z0-9]{6,}$/;
 const BRANCH = /^[A-Za-z0-9._/{}-]+$/;
 
 export const DEFAULT_PR_BODY = [
@@ -436,9 +438,18 @@ function parseRelease(raw: unknown): ReleaseConfig {
   const gh = (r.github ?? {}) as Record<string, unknown>;
   const bump = (r.versionBump ?? {}) as Record<string, unknown>;
   const team: Record<string, string> = {};
-  for (const [login, name] of Object.entries((r.team as Record<string, unknown> | undefined) ?? {})) {
+  const slack: Record<string, string> = {};
+  for (const [login, entry] of Object.entries((r.team as Record<string, unknown> | undefined) ?? {})) {
     if (!LOGIN.test(login)) fail("release.team", `"${login}" is not a GitHub login`);
-    team[login] = str(name, `release.team.${login}`);
+    // A plain name, or { name, slack } where slack is the member ID ("Copy member ID" in their Slack profile).
+    if (typeof entry === "object" && entry !== null && !Array.isArray(entry)) {
+      const e = entry as Record<string, unknown>;
+      team[login] = str(e.name, `release.team.${login}.name`);
+      const id = optStr(e.slack, `release.team.${login}.slack`, SLACK_MEMBER);
+      if (id) slack[login] = id;
+    } else {
+      team[login] = str(entry, `release.team.${login}`);
+    }
   }
   const prBody = bump.prBody === undefined ? DEFAULT_PR_BODY : bump.prBody;
   if (!Array.isArray(prBody) || prBody.some((l) => typeof l !== "string")) fail("release.versionBump.prBody", "must be an array of lines");
@@ -471,6 +482,7 @@ function parseRelease(raw: unknown): ReleaseConfig {
     },
     jira,
     team,
+    slack,
   };
 }
 
