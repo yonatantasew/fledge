@@ -71,6 +71,8 @@ export function ReleasePanel({ project }: { project: string }) {
   const fromStatus = settings?.jira?.fromStatus;
 
   const [facts, setFacts] = useState<ReleaseFacts | null>(null);
+  const [suggested, setSuggested] = useState(""); // the next version, as the server worked it out
+  const [typedVersion, setTypedVersion] = useState<string | null>(null); // kept across reloads
   const [excluded, setExcluded] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -115,7 +117,8 @@ export function ReleasePanel({ project }: { project: string }) {
     setDraftInfo(null);
     try {
       const r = await releaseApi.facts(project, baseTag || null, prerelease);
-      setFacts(r.facts);
+      setSuggested(r.facts.version);
+      setFacts(typedVersion ? { ...r.facts, version: typedVersion } : r.facts);
       setExcluded(new Set(r.facts.prs.filter((p) => p.versionBump).map((p) => p.number)));
       setNotes(r.templates);
       setEdited(false);
@@ -224,8 +227,27 @@ export function ReleasePanel({ project }: { project: string }) {
                       id="version"
                       className={cn("font-mono", !versionOk && "border-destructive")}
                       value={facts.version}
-                      onChange={(e) => setFacts({ ...facts, version: e.target.value.trim().replace(/^v/, "") })}
+                      onChange={(e) => {
+                        const v = e.target.value.trim().replace(/^v/, "");
+                        setTypedVersion(v && v !== suggested ? v : null);
+                        setFacts({ ...facts, version: v });
+                      }}
                     />
+                    {typedVersion && (
+                      <p className="text-xs text-muted-foreground">
+                        Next would be <span className="font-mono">{suggested}</span>.{" "}
+                        <button
+                          type="button"
+                          className="underline underline-offset-2 hover:text-foreground"
+                          onClick={() => {
+                            setTypedVersion(null);
+                            setFacts({ ...facts, version: suggested });
+                          }}
+                        >
+                          Use it
+                        </button>
+                      </p>
+                    )}
                   </div>
                   <div className="space-y-1.5">
                     <Label htmlFor="date" className="text-xs text-muted-foreground">
