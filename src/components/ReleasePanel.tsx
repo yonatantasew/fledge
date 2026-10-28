@@ -165,6 +165,11 @@ export function ReleasePanel({ project }: { project: string }) {
   const ticketKeys = [...new Set(effective?.prs.flatMap((p) => p.tickets) ?? [])];
   const willMove = ticketKeys.filter((k) => fromStatus && effective?.tickets[k]?.status === fromStatus);
   const bump = effective && settings ? bumpValues(effective) : null;
+  // Drafted or hand-edited notes stop following the facts, so they can name an old version.
+  const staleNotes =
+    edited && effective
+      ? (["slack", "github"] as const).filter((k) => notes[k].trim() && !notes[k].includes(effective.version)).map((k) => (k === "slack" ? "channel note" : "GitHub release"))
+      : [];
   const versionOk = /^\d+\.\d+\.\d+\+\d+$/.test(effective?.version ?? "");
   const canPublish = !!effective && effective.prs.length > 0 && versionOk && confirm === tag && !publishing && !result;
 
@@ -317,6 +322,16 @@ export function ReleasePanel({ project }: { project: string }) {
                   ))}
                 </ul>
               </div>
+            )}
+            {staleNotes.length > 0 && effective && (
+              <p className="flex items-start gap-1.5 rounded-lg border border-warning/40 bg-warning/5 p-3 text-sm">
+                <HugeiconsIcon icon={Alert02Icon} className="mt-0.5 size-4 shrink-0 text-warning" />
+                <span>
+                  The {staleNotes.join(" and ")} {staleNotes.length > 1 ? "don't" : "doesn't"} mention{" "}
+                  <span className="font-mono">{effective.version}</span>, the version being released. Edit{" "}
+                  {staleNotes.length > 1 ? "them" : "it"}, or use the template again.
+                </span>
+              </p>
             )}
             <Tabs defaultValue="slack">
               <TabsList>
