@@ -160,6 +160,7 @@ async function mergedPrs(p: Project, range: string | null, head: string): Promis
       title: d.title,
       author: d.author.login,
       dri: rel(p).team[d.author.login] ?? d.author.login,
+      ...(rel(p).slack[d.author.login] ? { slack: rel(p).slack[d.author.login] } : {}),
       branch,
       mergeSha: m.sha,
       url: d.url,

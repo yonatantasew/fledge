@@ -140,6 +140,12 @@ test("a deploy note: the builds, then each PR since the last deploy with its tic
   );
 });
 
+test("a deploy note mentions a DRI by Slack member ID when the team config has one", () => {
+  const pr = { number: 7, title: "Fix a typo", tickets: [], dri: "Bo", slack: "U012ABCDE" } as unknown as MergedPr;
+  const text = templateDeploy({ app: "demo", label: "QA", version: "1.0.0+2", builds: [], branch: "main", sha: "7bb364f2aaaa", since: null, prs: [pr], commits: [] });
+  assert.match(text, /\n   DRI: <@U012ABCDE>$/);
+});
+
 test("a deploy note without PRs lists commits, or says nothing changed", () => {
   const base = { app: "demo", label: "Deploy", version: "1.0.0+1", builds: [{ environment: "Prod", mode: "release", platform: "android" as const, output: "aab" }], branch: "feature/x", sha: "abcdef1234", prs: [] };
   assert.match(templateDeploy({ ...base, since: null, commits: ["Add login", "Fix crash"] }), /Commits since the last release:\n• Add login\n• Fix crash$/);

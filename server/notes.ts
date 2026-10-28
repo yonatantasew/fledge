@@ -7,6 +7,7 @@ export interface MergedPr {
   title: string;
   author: string; // GitHub login
   dri: string; // display name for the note
+  slack?: string; // the DRI's Slack member ID, when the team config has one
   branch: string;
   mergeSha: string;
   url: string;
@@ -232,7 +233,8 @@ export function templateDeploy(d: DeployNoteFacts): string {
     lines.push(`Changes ${since}:`);
     d.prs.forEach((p, i) => {
       lines.push(`${i + 1}. ${cleanTitle(p.title, p.tickets)} — ${p.tickets.length ? p.tickets.join(", ") : `PR #${p.number}`}`);
-      lines.push(`   DRI: @${p.dri}`);
+      // fledge posts this one itself, so a member ID becomes a real mention.
+      lines.push(`   DRI: ${p.slack ? `<@${p.slack}>` : `@${p.dri}`}`);
     });
   } else if (d.commits.length) {
     lines.push(`Commits ${since}:`);

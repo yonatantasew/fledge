@@ -115,7 +115,7 @@ Start from [fledge.example.json](fledge.example.json). The fields:
 | `release.tickets.project` | Ticket key prefix to find in PR titles and branches (`PROJ-123`). `PROJ-0` / `PROJ-0000` means "no ticket". |
 | `release.versionBump` | Templates for the bump `branch`, `commitMessage`, `prTitle` and `prBody` (an array of lines). Placeholders: `{version}`, `{tag}`, `{versionSlug}` (`1-3-1-4`), `{date}`, `{baseBranch}`, `{headShort}`, `{bumpShort}`, `{releaseKind}`. If your repo checks PR titles or bodies, match its rules here. |
 | `release.jira` | Optional. `site`, and the `fromStatus` → `toStatus` move to make when a release ships. |
-| `release.team` | GitHub login → the name used for "DRI" in the notes. |
+| `release.team` | GitHub login → the name used for "DRI" in the notes, or `{ "name": "…", "slack": "U…" }`. With a Slack member ID (their Slack profile → ⋮ → Copy member ID), the notes fledge posts to Slack mention them for real; Slack never turns a plain `@name` from a bot into a mention. A note you copy from the Release tab keeps `@name`, so mention people as you paste it. |
 
 ## Build commands
 
