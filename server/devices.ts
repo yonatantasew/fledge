@@ -104,6 +104,7 @@ export class NeedsReplace extends Error {}
 export function installBlocker(t: Pick<InstallTarget, "platform" | "artifact" | "exportMethod">): string | null {
   if (t.artifact === "appbundle") return "App Bundles only install through Play; build an APK";
   if (t.artifact === "xcode") return "Prepare Xcode doesn't produce an app";
+  if (t.artifact === "simulator") return "a simulator app only runs on the iOS simulator: unzip it, then xcrun simctl install booted Runner.app";
   if (t.platform === "ios" && t.artifact === "ipa" && t.exportMethod === "app-store")
     return "App Store IPAs only install through TestFlight; use Development or Ad hoc, or a .app";
   return null;

@@ -348,7 +348,7 @@ async function runJob(job: Job) {
     endStep(job, "pub", cancelled() ? "cancelled" : pub === 0 ? "succeeded" : "failed", pub === 0 || cancelled() ? undefined : `exited with ${pub}`);
     let code: number | null = pub;
     if (!cancelled() && pub === 0) {
-      beginStep(job, "build", `flutter build ${job.artifact === "xcode" ? "ios --config-only" : job.artifact}`);
+      beginStep(job, "build", `flutter build ${job.artifact === "xcode" ? "ios --config-only" : job.artifact === "simulator" ? "ios --simulator" : job.artifact}`);
       code = await step(slot, argvs.get(job.id)!);
       endStep(job, "build", cancelled() ? "cancelled" : code === 0 ? "succeeded" : "failed", code === 0 || cancelled() ? undefined : `exited with ${code}`);
     }
@@ -433,9 +433,17 @@ async function collect(job: Job) {
   }
   const ext = path.extname(src);
   const abi = job.command.includes("--target-platform android-arm64") ? "-arm64" : "";
-  const dest = path.join(job.archiveDir!, `${job.platform}-${job.flavor}-${job.mode}${abi}${ext}`);
+  const kind = job.artifact === "simulator" ? "-simulator" : "";
+  const dest = path.join(job.archiveDir!, `${job.platform}-${job.flavor}-${job.mode}${abi}${kind}${ext}`);
   await cp(src, dest, { recursive: true, verbatimSymlinks: true });
   job.artifactFile = dest;
+  if (job.artifact === "simulator") {
+    // A .app is a folder; the zip is what can be shipped and handed on. ditto
+    // keeps the bundle's symlinks and permissions, which plain zip can lose.
+    const zip = `${dest.slice(0, -ext.length)}.zip`;
+    await run("ditto", ["-c", "-k", "--keepParent", dest, zip]);
+    job.artifactFile = zip;
+  }
 
   const plan = argvs.get(job.id)!;
   const symbols = plan.find((a) => a.startsWith("--split-debug-info="))?.split("=")[1];
@@ -452,6 +460,7 @@ async function collect(job: Job) {
     }
   }
 
+  // Read back from the .app itself, also for a simulator build shipped as a zip.
   job.verified = await verify(job, dest).catch((e) => ({ error: String(e.message ?? e) }));
   await log(job, `\nArchived ${dest}\nVerified: ${JSON.stringify(job.verified)}\n`);
   // Failing here keeps it from being installed or shipped as the build it isn't.
@@ -940,7 +949,7 @@ function resume(job: Job) {
 /** What shipping a build would post, or why it can't be shipped. */
 async function shipPlan(job: Job, note = ""): Promise<{ channel: string; text: string; file: { path: string; name: string }; size: number } | { error: string; needs?: "channel" | "token" }> {
   if (job.status !== "succeeded" || !job.artifactFile || !existsSync(job.artifactFile)) return { error: "only a finished build with its file can be shipped" };
-  if (!["apk", "appbundle", "ipa"].includes(job.artifact)) return { error: `a ${job.artifact === "app" ? ".app (a folder)" : job.artifact} build can't be shipped; build an APK, App Bundle or IPA` };
+  if (!["apk", "appbundle", "ipa", "simulator"].includes(job.artifact)) return { error: `a ${job.artifact === "app" ? ".app (a folder)" : job.artifact} build can't be shipped; build an APK, App Bundle, IPA or simulator app` };
   const config = (await getProject(job.project))?.config;
   const slack = config?.ship?.slack;
   if (!slack) return { error: "this app has no Slack channel: set ship.slack.channel in its config", needs: "channel" };

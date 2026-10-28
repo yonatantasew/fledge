@@ -383,7 +383,7 @@ async function send<T>(method: string, url: string, body?: unknown): Promise<T> 
 export interface CommandPreview {
   environment: string;
   platform: "android" | "ios";
-  output: "apk" | "appbundle" | "ipa" | "app" | "xcode";
+  output: "apk" | "appbundle" | "ipa" | "app" | "simulator" | "xcode";
   template: string | null;
   own: boolean;
   shared: string | null;

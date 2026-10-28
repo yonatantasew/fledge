@@ -24,6 +24,7 @@ const LABEL: Record<Output, string> = {
   appbundle: "Android App Bundle",
   ipa: "iOS IPA",
   app: "iOS .app (device)",
+  simulator: "iOS simulator app (debug)",
   xcode: "Xcode project (config only)",
 };
 
@@ -33,6 +34,7 @@ const STARTER: Record<Output, string> = {
   appbundle: "{flutter} build appbundle --{mode} {flavorArgs} {targetArgs} {envDefines} {options} {version} --no-pub",
   ipa: "{flutter} build ipa --{mode} {flavorArgs} {targetArgs} {envDefines} {options} --export-method={exportMethod} {version} --no-pub",
   app: "{flutter} build ios --{mode} {flavorArgs} {targetArgs} {envDefines} {options} {version} --no-pub",
+  simulator: "{flutter} build ios --simulator --{mode} {flavorArgs} {targetArgs} {envDefines} {options} {version} --no-pub",
   xcode: "{flutter} build ios --config-only --{mode} {flavorArgs} {targetArgs} {envDefines} {options} {version} --no-pub",
 };
 

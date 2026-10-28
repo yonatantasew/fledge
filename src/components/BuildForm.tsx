@@ -330,7 +330,7 @@ export function BuildForm({ projectId, checkout }: { projectId: string; checkout
         {iosOn && (
           <Section
             title="iOS output"
-            hint="IPA: archives and exports with the chosen method, and keeps the .xcarchive so you can Distribute from Organizer. .app: a device build to install with devicectl (the only choice for debug). Prepare Xcode: builds nothing — writes this flavor's config, then quits and reopens Xcode on the right scheme for archiving by hand."
+            hint="IPA: archives and exports with the chosen method, and keeps the .xcarchive so you can Distribute from Organizer. .app: a device build to install with devicectl. Simulator: the app for the iOS simulator, zipped so it can be shipped; debug only. Prepare Xcode: builds nothing — writes this flavor's config, then quits and reopens Xcode on the right scheme for archiving by hand."
           >
             <ToggleGroup
               type="single"
@@ -346,10 +346,20 @@ export function BuildForm({ projectId, checkout }: { projectId: string; checkout
               <ToggleGroupItem value="app" className="flex-1 max-sm:px-1 max-sm:text-[13px]">
                 .app (device)
               </ToggleGroupItem>
+              <ToggleGroupItem value="simulator" className="flex-1 max-sm:px-1 max-sm:text-[13px]">
+                Simulator
+              </ToggleGroupItem>
               <ToggleGroupItem value="xcode" className="flex-1 max-sm:px-1 max-sm:text-[13px]">
                 Prepare Xcode
               </ToggleGroupItem>
             </ToggleGroup>
+            {options.iosArtifact === "simulator" && (
+              <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+                <HugeiconsIcon icon={InformationCircleIcon} className="mt-px size-3.5 shrink-0" />
+                Debug builds only: Flutter has no release or profile build for the simulator. To run it, unzip and
+                xcrun simctl install booted Runner.app.
+              </p>
+            )}
             {options.iosArtifact === "xcode" && (
               <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
                 <HugeiconsIcon icon={InformationCircleIcon} className="mt-px size-3.5 shrink-0" />

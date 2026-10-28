@@ -131,7 +131,7 @@ commands, add flags, or call your own script or `make` target.
     "apk": "{flutter} build apk --{mode} --flavor {flavor} --dart-define=FLAVOR={env} {options} {version} --no-pub",
     "appbundle": "…"
   },
-  "ios": { "ipa": "…", "app": "…", "xcode": "{flutter} build ios --config-only --{mode} --flavor {flavor} --no-pub" }
+  "ios": { "ipa": "…", "app": "…", "simulator": "{flutter} build ios --simulator --{mode} --flavor {flavor} --no-pub", "xcode": "…" }
 }
 ```
 
@@ -251,6 +251,7 @@ shows the whole log.
 | Android | APK, App Bundle | Signing comes from the app's Gradle setup. |
 | iOS | IPA | Export method: App Store, Ad hoc or Development. The `.xcarchive` is kept for Organizer. There is no debug IPA. |
 | iOS | `.app` | A device build, for `xcrun devicectl device install app`. |
+| iOS | Simulator | The app for the iOS simulator, archived as the `.app` and a `.zip` that can be shipped. Debug only: Flutter has no release or profile simulator build. Run it with `xcrun simctl install booted Runner.app`. A config that writes out its commands needs a `commands.ios.simulator` line. |
 | iOS | Prepare Xcode | Builds nothing. Sets Xcode up for one flavor; see [Xcode](#xcode). |
 
 **Android: 64-bit ARM phones only** (off by default) compiles the Dart code
@@ -318,6 +319,8 @@ this Mac. **Open the app after installing** is off by default.
   install through TestFlight. Debug builds are installed but not launched,
   because they need a debugger.
 - App Bundles (`.aab`) can't be installed directly.
+- Simulator apps aren't installed from fledge, which lists physical devices
+  only. Unzip one and run `xcrun simctl install booted Runner.app`.
 
 ## Shipping to Slack
 
@@ -444,7 +447,7 @@ Routes go in the app's config:
 ```
 
 `options` takes `androidOutput` (`apk`, `appbundle`), `iosOutput` (`ipa`,
-`app`), `exportMethod`, `splitDebugInfo`, `obfuscate`, `arm64Only` and
+`app`, `simulator`; a simulator route's iOS builds must be debug), `exportMethod`, `splitDebugInfo`, `obfuscate`, `arm64Only` and
 `toggles` (switch ids). `post` is `together` (default) or `as-built`;
 `onFailure` (for `together`) is `hold` (default) or `post-built`. Each route counts its own deploys for "since the
 last deploy"; one-offs count deploys to the same channel and environments.

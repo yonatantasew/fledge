@@ -26,4 +26,5 @@ test("only directly installable builds get an install", () => {
   assert.match(installBlocker({ platform: "ios", artifact: "ipa", exportMethod: "app-store" })!, /TestFlight/);
   assert.match(installBlocker({ platform: "android", artifact: "appbundle" })!, /Play/);
   assert.ok(installBlocker({ platform: "ios", artifact: "xcode" }));
+  assert.match(installBlocker({ platform: "ios", artifact: "simulator" })!, /simctl install booted/);
 });

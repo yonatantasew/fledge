@@ -145,6 +145,10 @@ test("deploy.routes: builds by environment, options and a channel, all checked",
   assert.throws(() => parseConfig(route({ to: { slack: "deployments" } })), /to\.slack/);
   assert.throws(() => parseConfig(route({ options: { toggles: ["nope"] } })), /switch ids/);
   assert.throws(() => parseConfig(route({ builds: Array(11).fill({ platform: "android", environment: "staging", mode: "release" }) })), /at most 10/);
+  const simulator = (mode: string) => route({ builds: [{ platform: "ios", environment: "staging", mode }], options: { iosOutput: "simulator" } });
+  assert.equal(parseConfig(simulator("debug")).deploy[0].options.iosOutput, "simulator");
+  assert.throws(() => parseConfig(simulator("release")), /simulator builds are debug only, but an iOS build here is release/);
+  assert.throws(() => parseConfig(route({ options: { iosOutput: "zip" } })), /iosOutput/);
   assert.throws(() => parseConfig({ ...base, deploy: { routes: [route({}).deploy.routes[0], route({}).deploy.routes[0]] } }), /unique/);
 });
 

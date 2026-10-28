@@ -15,7 +15,9 @@ export const MODES = ["debug", "profile", "release"] as const;
 export const ANDROID_ARTIFACTS = ["apk", "appbundle"] as const;
 // "xcode" builds nothing: it writes the flavor's Generated.xcconfig and
 // restarts Xcode on the workspace, for archiving by hand in Xcode.
-export const IOS_ARTIFACTS = ["ipa", "app", "xcode"] as const;
+// "simulator" is the app for the iOS simulator, zipped so it can be shipped;
+// Flutter only builds the simulator in debug.
+export const IOS_ARTIFACTS = ["ipa", "app", "simulator", "xcode"] as const;
 export const EXPORT_METHODS = ["app-store", "ad-hoc", "development"] as const;
 
 export type Platform = (typeof PLATFORMS)[number];
@@ -130,6 +132,9 @@ export function planBuild(
   if (t.platform === "ios" && artifact === "ipa" && t.mode === "debug") {
     return { skipped: { ...t, reason: "an IPA can't be exported from a debug build — choose .app for debug" } };
   }
+  if (t.platform === "ios" && artifact === "simulator" && t.mode !== "debug") {
+    return { skipped: { ...t, reason: `Flutter only builds the iOS simulator in debug, not ${t.mode} — choose Debug` } };
+  }
 
   const template = templateFor(cfg, env, t.platform, artifact)?.template;
   if (!template) return { skipped: { ...t, reason: `the config has no commands.${t.platform}.${artifact}, for all environments or for ${t.flavor}` } };
@@ -184,6 +189,8 @@ export function artifactPath(b: Pick<PlannedBuild, "platform" | "nativeFlavor" |
       return "build/ios/ipa"; // a directory; the server picks the .ipa inside
     case "app":
       return "build/ios/iphoneos/Runner.app";
+    case "simulator":
+      return "build/ios/iphonesimulator/Runner.app";
     case "xcode":
       return "ios/Flutter/Generated.xcconfig";
   }

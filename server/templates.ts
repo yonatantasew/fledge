@@ -21,12 +21,12 @@
 
 import type { FledgeConfig, FlavorConfig } from "./config.ts";
 
-export type Output = "apk" | "appbundle" | "ipa" | "app" | "xcode";
+export type Output = "apk" | "appbundle" | "ipa" | "app" | "simulator" | "xcode";
 
 export interface CommandTemplates {
   pubGet: string | null; // run once per checkout before builds; null to skip
   android: { apk?: string; appbundle?: string };
-  ios: { ipa?: string; app?: string; xcode?: string };
+  ios: { ipa?: string; app?: string; simulator?: string; xcode?: string };
 }
 
 export const INLINE = ["mode", "env", "flavor", "target", "sha", "exportMethod"] as const;
@@ -138,6 +138,7 @@ export function generateCommands(cfg: Pick<FledgeConfig, "flavors" | "flavorDefi
     ios: {
       ipa: line("{flutter} build ipa --{mode}", "ios", true),
       app: line("{flutter} build ios --{mode}", "ios"),
+      simulator: line("{flutter} build ios --simulator --{mode}", "ios"),
       xcode: line("{flutter} build ios --config-only --{mode}", "ios"),
     },
   };

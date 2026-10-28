@@ -56,6 +56,28 @@ test("an iOS .app builds with `flutter build ios` and no export method", () => {
   assert.ok(!b.argv.some((a) => a.startsWith("--export-method")));
 });
 
+test("an iOS simulator app builds with `flutter build ios --simulator`, debug only", () => {
+  const b = plan({ platform: "ios", flavor: "staging", mode: "debug" }, { iosArtifact: "simulator" });
+  assert.deepEqual(b.argv.slice(1, 5), ["build", "ios", "--simulator", "--debug"]);
+  assert.ok(!b.argv.some((a) => a.startsWith("--export-method")));
+  assert.equal(artifactPath(b), "build/ios/iphonesimulator/Runner.app");
+  for (const mode of ["profile", "release"] as const) {
+    const r = planBuild({ platform: "ios", flavor: "staging", mode }, { ...base, iosArtifact: "simulator" }, "abc", cfg);
+    assert.ok("skipped" in r && /only builds the iOS simulator in debug/.test(r.skipped.reason), mode);
+  }
+});
+
+test("a simulator build takes the toggles like any other", () => {
+  const b = plan({ platform: "ios", flavor: "staging", mode: "debug" }, { iosArtifact: "simulator", toggles: ["verbose"] });
+  assert.ok(b.argv.includes("--dart-define=VERBOSE_LOGS=true"));
+});
+
+test("a config that writes out its commands skips the simulator until it has one", () => {
+  const written = parseConfig({ flavors: [{ name: "staging" }], commands: { ios: { app: "{flutter} build ios --{mode} --flavor {flavor} --no-pub" } } });
+  const r = planBuild({ platform: "ios", flavor: "staging", mode: "debug" }, { ...base, iosArtifact: "simulator" }, "abc", written);
+  assert.ok("skipped" in r && /commands\.ios\.simulator/.test(r.skipped.reason));
+});
+
 test("a debug IPA is skipped, not attempted", () => {
   const r = planBuild({ platform: "ios", flavor: "staging", mode: "debug" }, base, "abc", cfg);
   assert.ok("skipped" in r);
@@ -239,5 +261,6 @@ test("previews every environment's commands as a build runs them, the form's cho
   assert.deepEqual(at("prod", "apk"), { environment: "prod", platform: "android", output: "apk", template: "{flutter} build apk --{mode} --flavor prod {options}", own: true, shared: "{flutter} build apk --{mode} --flavor {flavor} --dart-define=GIT_SHA={sha} {options} {version}", argv: ["fvm", "flutter", "build", "apk", "--release", "--flavor", "prod", "{options}"] });
   assert.deepEqual(at("prod", "ipa").argv, ["fvm", "flutter", "build", "ipa", "--release", "--export-method={exportMethod}"]);
   assert.deepEqual(at("prod", "appbundle"), { environment: "prod", platform: "android", output: "appbundle", template: null, own: false, shared: null, argv: null });
-  assert.equal(p.length, 2 * 5);
+  assert.deepEqual(at("staging", "simulator"), { environment: "staging", platform: "ios", output: "simulator", template: null, own: false, shared: null, argv: null });
+  assert.equal(p.length, 2 * 6);
 });

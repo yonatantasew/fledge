@@ -28,7 +28,7 @@ export interface FlavorConfig {
   commands: EnvCommands;
 }
 
-export type EnvCommands = { android: Partial<Record<"apk" | "appbundle", string>>; ios: Partial<Record<"ipa" | "app" | "xcode", string>> };
+export type EnvCommands = { android: Partial<Record<"apk" | "appbundle", string>>; ios: Partial<Record<"ipa" | "app" | "simulator" | "xcode", string>> };
 
 export interface ToggleConfig {
   id: string;
@@ -67,7 +67,7 @@ export interface DeployRoute {
   builds: { platform: "android" | "ios"; environment: string; mode: "debug" | "profile" | "release" }[];
   options: {
     androidOutput?: "apk" | "appbundle";
-    iosOutput?: "ipa" | "app";
+    iosOutput?: "ipa" | "app" | "simulator";
     exportMethod?: "app-store" | "ad-hoc" | "development";
     splitDebugInfo?: boolean;
     obfuscate?: boolean;
@@ -326,9 +326,12 @@ function parseDeploy(raw: unknown, environments: string[], toggleIds: string[]):
     if (typeof opt !== "object" || Array.isArray(opt)) fail(`${w}.options`, "must be an object");
     const options: DeployRoute["options"] = {
       androidOutput: optStr(opt.androidOutput, `${w}.options.androidOutput`, /^(apk|appbundle)$/) as DeployRoute["options"]["androidOutput"],
-      iosOutput: optStr(opt.iosOutput, `${w}.options.iosOutput`, /^(ipa|app)$/) as DeployRoute["options"]["iosOutput"],
+      iosOutput: optStr(opt.iosOutput, `${w}.options.iosOutput`, /^(ipa|app|simulator)$/) as DeployRoute["options"]["iosOutput"],
       exportMethod: optStr(opt.exportMethod, `${w}.options.exportMethod`, /^(app-store|ad-hoc|development)$/) as DeployRoute["options"]["exportMethod"],
     };
+    // Caught here rather than when the route runs: Flutter has no release or profile simulator build.
+    const notDebug = options.iosOutput === "simulator" ? builds.find((b) => b.platform === "ios" && b.mode !== "debug") : undefined;
+    if (notDebug) fail(`${w}.options.iosOutput`, `simulator builds are debug only, but an iOS build here is ${notDebug.mode}`);
     for (const k of ["splitDebugInfo", "obfuscate", "arm64Only"] as const) {
       if (opt[k] !== undefined && typeof opt[k] !== "boolean") fail(`${w}.options.${k}`, "must be true or false");
       if (opt[k] !== undefined) options[k] = opt[k] as boolean;
@@ -486,7 +489,7 @@ function parseRelease(raw: unknown): ReleaseConfig {
   };
 }
 
-const OUTPUTS = { android: ["apk", "appbundle"], ios: ["ipa", "app", "xcode"] } as const;
+const OUTPUTS = { android: ["apk", "appbundle"], ios: ["ipa", "app", "simulator", "xcode"] } as const;
 
 export { fill } from "./template.ts";
 import { INLINE, templateProblems, WHOLE, type CommandTemplates } from "./templates.ts";
