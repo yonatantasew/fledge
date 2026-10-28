@@ -1334,7 +1334,7 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
       configSource: project.source,
       configError: project.error ?? null,
       flavors: project.config?.flavors.map(({ name, label, confirm }) => ({ name, label, confirm })) ?? [],
-      toggles: project.config?.toggles.map(({ id, label, hint, skipFlavors }) => ({ id, label, hint, skipFlavors })) ?? [],
+      toggles: project.config?.toggles.map(({ id, label, hint, skipFlavors, iosOutput }) => ({ id, label, hint, skipFlavors, iosOutput: iosOutput ?? null })) ?? [],
       releases: !!project.config?.release,
       deployRoutes: project.config?.deploy.map(({ id, label, builds, to }) => ({ id, label, builds, channel: to.slack })) ?? [],
       shipChannel: project.config?.ship?.slack?.channel ?? null,

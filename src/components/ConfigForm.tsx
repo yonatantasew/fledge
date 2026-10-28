@@ -15,7 +15,7 @@ type Path = (string | number)[];
 type Edit = (path: Path, value: unknown) => void;
 
 const ENV_FIELDS = ["name", "label", "flavor", "androidId", "iosId", "xcodeScheme", "confirm"] as const;
-const SWITCH_FIELDS = ["id", "label", "hint", "define", "skipFlavors"] as const;
+const SWITCH_FIELDS = ["id", "label", "hint", "define", "skipFlavors", "iosOutput"] as const;
 const FORM_TOP = ["flutter", "flavors", "versions", "ship", "release", "toggles"] as const;
 const FLUTTER = [
   { value: "auto", label: "Auto: fvm or puro if the app pins one, else flutter" },
@@ -229,6 +229,19 @@ function BuildSwitch({ toggle, at, names, edit, onRemove }: { toggle: Obj; at: P
         </Field>
         <Field label="Hint">
           <Input value={text(toggle.hint)} onChange={(e) => edit([...at, "hint"], e.target.value)} placeholder="Shown next to the checkbox" />
+        </Field>
+        <Field label="iOS output while on" hint="Replaces the form's choice; the simulator only builds debug">
+          <Select value={text(toggle.iosOutput) || "form"} onValueChange={(v) => edit([...at, "iosOutput"], v === "form" ? undefined : v)}>
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="form">The one picked in the build form</SelectItem>
+              <SelectItem value="simulator">Simulator</SelectItem>
+              <SelectItem value="app">.app (device)</SelectItem>
+              <SelectItem value="ipa">IPA</SelectItem>
+            </SelectContent>
+          </Select>
         </Field>
       </div>
       {names.length > 0 && (

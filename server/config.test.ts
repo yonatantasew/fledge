@@ -39,6 +39,7 @@ test("rejects values that would reach a command line unchecked", () => {
     { flavors: [{ name: "a" }], defines: { OK: "two words" } },
     { flavors: [{ name: "a" }], toggles: [{ id: "t", label: "T", define: "NOEQUALS" }] },
     { flavors: [{ name: "a" }], toggles: [{ id: "t", label: "T", define: "X=1", skipFlavors: ["b"] }] },
+    { flavors: [{ name: "a" }], toggles: [{ id: "t", label: "T", define: "X=1", iosOutput: "apk" }] },
     { flavors: [{ name: "a" }], symbolsDir: "../outside" },
     { flavors: [{ name: "a" }], symbolsDir: "/abs" },
     { flavors: [{ name: "a", androidId: "not an id" }] },

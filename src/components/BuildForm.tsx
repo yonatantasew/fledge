@@ -446,7 +446,11 @@ export function BuildForm({ projectId, checkout }: { projectId: string; checkout
                 key={t.id}
                 id={`toggle-${t.id}`}
                 label={t.label}
-                hint={[t.hint, t.skipFlavors.length ? `Never added to ${t.skipFlavors.map(flavorLabel).join(", ")}.` : ""]
+                hint={[
+                  t.hint,
+                  t.skipFlavors.length ? `Never added to ${t.skipFlavors.map(flavorLabel).join(", ")}.` : "",
+                  t.iosOutput === "simulator" ? "iOS debug builds make the simulator app." : t.iosOutput ? `iOS builds make the ${t.iosOutput} output.` : "",
+                ]
                   .filter(Boolean)
                   .join(" ")}
                 checked={toggleIds.includes(t.id)}

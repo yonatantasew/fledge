@@ -36,6 +36,9 @@ export interface ToggleConfig {
   hint: string;
   define: string; // KEY=VALUE passed as --dart-define when the toggle is on
   skipFlavors: string[]; // flavors the define is never added to
+  // While on, iOS builds use this output instead of the one picked in the
+  // form, for every mode it can build (the simulator only builds debug).
+  iosOutput?: "ipa" | "app" | "simulator" | "xcode";
 }
 
 export interface ReleaseConfig {
@@ -120,6 +123,7 @@ export interface FledgeConfig {
 }
 
 const NAME = /^[a-z][a-z0-9_]*$/;
+const TOGGLE_IOS_OUTPUTS = ["ipa", "app", "simulator", "xcode"] as const;
 const DEFINE_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const DEFINE_VALUE = /^[A-Za-z0-9_.:/-]*$/;
 const APP_ID = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_-]+)+$/;
@@ -257,12 +261,15 @@ export function parseConfig(raw: unknown): FledgeConfig {
     defineEntry(define.slice(0, eq), define.slice(eq + 1), `${w}.define`);
     const skip = (o.skipFlavors as unknown[] | undefined) ?? [];
     for (const s of skip) if (!names.includes(s as string)) fail(`${w}.skipFlavors`, `unknown flavor "${String(s)}"`);
+    const iosOutput = optStr(o.iosOutput, `${w}.iosOutput`);
+    if (iosOutput !== undefined && !TOGGLE_IOS_OUTPUTS.includes(iosOutput as never)) fail(`${w}.iosOutput`, `must be one of ${TOGGLE_IOS_OUTPUTS.join(", ")}`);
     return {
       id: str(o.id, `${w}.id`, /^[a-zA-Z][a-zA-Z0-9_-]*$/),
       label: str(o.label, `${w}.label`),
       hint: optStr(o.hint, `${w}.hint`) ?? "",
       define,
       skipFlavors: skip as string[],
+      ...(iosOutput ? { iosOutput: iosOutput as ToggleConfig["iosOutput"] } : {}),
     };
   });
   if (new Set(toggles.map((t) => t.id)).size !== toggles.length) fail("toggles", "ids must be unique");

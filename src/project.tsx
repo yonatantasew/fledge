@@ -3,7 +3,7 @@ import { createContext, useContext } from "react";
 // What the app's fledge.json says, as the server sends it in /api/info.
 export interface ProjectInfo {
   flavors: { name: string; label: string; confirm: boolean }[];
-  toggles: { id: string; label: string; hint: string; skipFlavors: string[] }[];
+  toggles: { id: string; label: string; hint: string; skipFlavors: string[]; iosOutput: string | null }[];
   releases: boolean;
   deployRoutes: { id: string; label: string; channel: string; builds: { platform: "android" | "ios"; environment: string; mode: string }[] }[];
   shipChannel: string | null;

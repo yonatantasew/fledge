@@ -123,10 +123,23 @@ export function planBuild(
   cfg: FledgeConfig,
   flutter: string[] = ["flutter"],
 ): { build: PlannedBuild } | { skipped: SkippedBuild } {
-  const artifact = t.platform === "android" ? o.androidArtifact : o.iosArtifact;
+  let artifact: AndroidArtifact | IosArtifact = t.platform === "android" ? o.androidArtifact : o.iosArtifact;
   const notes: string[] = [];
   const env = cfg.flavors.find((f) => f.name === t.flavor);
   if (!env) return { skipped: { ...t, reason: `no environment "${t.flavor}" in the config` } };
+
+  // A switch can pick the iOS output, e.g. the simulator app for an emulator
+  // build. Modes that output can't build keep the form's choice.
+  if (t.platform === "ios") {
+    for (const toggle of cfg.toggles) {
+      const out = toggle.iosOutput;
+      if (!out || out === artifact || !o.toggles.includes(toggle.id) || toggle.skipFlavors.includes(t.flavor)) continue;
+      if (out === "simulator" && t.mode !== "debug") continue;
+      artifact = out;
+      notes.push(`${toggle.label}: iOS output is ${out}`);
+      break;
+    }
+  }
 
   // `flutter build ipa` has no debug archive: Xcode cannot export one.
   if (t.platform === "ios" && artifact === "ipa" && t.mode === "debug") {

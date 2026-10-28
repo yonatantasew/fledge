@@ -108,7 +108,7 @@ Start from [fledge.example.json](fledge.example.json). The fields:
 | `defineFiles` | `--dart-define-from-file`s for every build (paths inside the app). |
 | `args` | Extra flags passed through as they are: `all`, `android` and `ios` lists, e.g. `{ "all": ["--no-tree-shake-icons"] }`. |
 | `symbolsDir` | Where split debug info goes. Default `build/symbols/{flavor}/{platform}`. |
-| `toggles[]` | On/off switches in the form, each adding one `--dart-define` (e.g. a debug-logging flag). `skipFlavors` lists flavors it's never added to. |
+| `toggles[]` | On/off switches in the form, each adding one `--dart-define` (e.g. a debug-logging flag). `skipFlavors` lists flavors it's never added to. `iosOutput` (`ipa`, `app`, `simulator` or `xcode`) makes iOS builds use that output while the switch is on, for each mode it can build — `simulator` only replaces debug builds, so a switch for emulator builds can turn debug iOS builds into the simulator app. |
 | `release` | Optional. Without it the Release tab is turned off. |
 | `release.github` | `repo` (`owner/name`); `account` (which logged-in `gh` account to use, if you have several); `baseBranch` (default `main`). |
 | `release.channel` | First line of the channel note. |

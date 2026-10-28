@@ -77,6 +77,37 @@ test("an IPA asked for in debug is skipped, pointing at .app and Simulator", () 
   assert.ok("skipped" in r && /choose \.app for a device or Simulator/.test(r.skipped.reason));
 });
 
+const withEmulator = parseConfig({
+  flavors: [{ name: "staging" }, { name: "prod", confirm: true }],
+  toggles: [{ id: "emulator", label: "Emulator build", define: "ALLOW_EMU=true", skipFlavors: ["prod"], iosOutput: "simulator" }],
+});
+
+test("a switch with an iosOutput builds the simulator app for debug iOS builds", () => {
+  for (const iosArtifact of ["ipa", "app"] as const) {
+    const b = plan({ platform: "ios", flavor: "staging", mode: "debug" }, { iosArtifact, toggles: ["emulator"] }, withEmulator);
+    assert.equal(b.artifact, "simulator", iosArtifact);
+    assert.deepEqual(b.argv.slice(1, 4), ["build", "ios", "--simulator"]);
+    assert.ok(b.argv.includes("--dart-define=ALLOW_EMU=true"));
+    assert.ok(b.notes.some((n) => /Emulator build: iOS output is simulator/.test(n)));
+  }
+});
+
+test("a simulator iosOutput leaves release and profile on the picked output", () => {
+  for (const mode of ["release", "profile"] as const) {
+    const b = plan({ platform: "ios", flavor: "staging", mode }, { toggles: ["emulator"] }, withEmulator);
+    assert.equal(b.artifact, "ipa", mode);
+  }
+});
+
+test("an iosOutput needs its switch on, and is not used for skipped flavors or Android", () => {
+  const off = planBuild({ platform: "ios", flavor: "staging", mode: "debug" }, base, "abc", withEmulator);
+  assert.ok("skipped" in off);
+  const prod = planBuild({ platform: "ios", flavor: "prod", mode: "debug" }, { ...base, toggles: ["emulator"] }, "abc", withEmulator);
+  assert.ok("skipped" in prod && /IPA can't be exported/.test(prod.skipped.reason));
+  const android = plan({ platform: "android", flavor: "staging", mode: "debug" }, { toggles: ["emulator"] }, withEmulator);
+  assert.equal(android.artifact, "apk");
+});
+
 test("a config that writes out its commands skips the simulator until it has one", () => {
   const written = parseConfig({ flavors: [{ name: "staging" }], commands: { ios: { app: "{flutter} build ios --{mode} --flavor {flavor} --no-pub" } } });
   const r = planBuild({ platform: "ios", flavor: "staging", mode: "debug" }, { ...base, iosArtifact: "simulator" }, "abc", written);
