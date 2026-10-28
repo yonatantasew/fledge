@@ -130,7 +130,7 @@ export function planBuild(
 
   // `flutter build ipa` has no debug archive: Xcode cannot export one.
   if (t.platform === "ios" && artifact === "ipa" && t.mode === "debug") {
-    return { skipped: { ...t, reason: "an IPA can't be exported from a debug build — choose .app for debug" } };
+    return { skipped: { ...t, reason: "an IPA can't be exported from a debug build — choose .app for a device or Simulator for the iOS simulator" } };
   }
   if (t.platform === "ios" && artifact === "simulator" && t.mode !== "debug") {
     return { skipped: { ...t, reason: `Flutter only builds the iOS simulator in debug, not ${t.mode} — choose Debug` } };

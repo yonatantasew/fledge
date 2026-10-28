@@ -72,6 +72,11 @@ test("a simulator build takes the toggles like any other", () => {
   assert.ok(b.argv.includes("--dart-define=VERBOSE_LOGS=true"));
 });
 
+test("an IPA asked for in debug is skipped, pointing at .app and Simulator", () => {
+  const r = planBuild({ platform: "ios", flavor: "staging", mode: "debug" }, base, "abc", cfg);
+  assert.ok("skipped" in r && /choose \.app for a device or Simulator/.test(r.skipped.reason));
+});
+
 test("a config that writes out its commands skips the simulator until it has one", () => {
   const written = parseConfig({ flavors: [{ name: "staging" }], commands: { ios: { app: "{flutter} build ios --{mode} --flavor {flavor} --no-pub" } } });
   const r = planBuild({ platform: "ios", flavor: "staging", mode: "debug" }, { ...base, iosArtifact: "simulator" }, "abc", written);
