@@ -109,8 +109,8 @@ const ctx: ToolContext = {
     if (build !== "done1") throw new Error("only a finished build with its file can be shipped");
     return { channel: "#deployments", text: `*demo* staging release${note ? `\n${note}` : ""}`, file: "android-staging-release.apk", size: 52428800, ship: async () => (shipped.push(note), "Shipped.") };
   },
-  async releaseDraft(_app, _since, prerelease, exclude) {
-    const f = { ...facts, prerelease, prs: facts.prs.filter((pr) => !exclude.includes(pr.number)) };
+  async releaseDraft(_app, _since, prerelease, exclude, version) {
+    const f = { ...facts, prerelease, version: version ?? facts.version, prs: facts.prs.filter((pr) => !exclude.includes(pr.number)) };
     return { facts: f, templates: { slack: "slack", github: "template notes" }, baseBranch: "main", bumpBranch: "chore/bump-1.4.0-2", jira: { from: "In Review", to: "Ready for test" } };
   },
   async publishRelease(_app, req) {
@@ -267,6 +267,19 @@ test("publish_release describes the whole release and publishes exactly that", a
   assert.ok(asked?.details.some((d) => d.includes("then stops: nothing is pushed")));
   assert.ok(!asked?.details.some((d) => d.includes("pushed as")));
   assert.equal(published.length, 1, "declined: nothing published");
+});
+
+test("publish_release releases the version it's given instead of the next one", async () => {
+  let asked: Approval | undefined;
+  const before = published.length;
+  const r = await runTool("publish_release", { app: "demo", prerelease: true, update_jira: false, version: "v1.5.0+3" }, ctx, async (a) => ((asked = a), true));
+  assert.equal(r.isError, false, r.content);
+  assert.equal(asked?.title, "Publish v1.5.0+3 of demo as a pre-release");
+  assert.equal((published[before] as { facts: ReleaseFacts }).facts.version, "1.5.0+3");
+  const bad = await runTool("publish_release", { app: "demo", prerelease: true, update_jira: false, version: "1.5" }, ctx, yes);
+  assert.equal(bad.isError, true);
+  assert.match(bad.content, /version must look like/);
+  assert.equal(published.length, before + 1);
 });
 
 test("Jira actions show the ticket, then run acli with exactly what was approved", async () => {

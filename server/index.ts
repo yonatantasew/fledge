@@ -722,12 +722,12 @@ const assistantContext: ToolContext = {
       },
     };
   },
-  async releaseDraft(id, since, prerelease, exclude) {
+  async releaseDraft(id, since, prerelease, exclude, version) {
     const p = await getProject(id);
     const r = p?.config?.release;
     if (!p || !r) throw new Error("releases aren't set up for this app");
     const all = await gatherFacts(p, since ?? (await releases(p))[0]?.tag ?? null, prerelease);
-    all.version = (await nextVersionFor(p, p.root)).version; // as the Release tab
+    all.version = version ?? (await nextVersionFor(p, p.root)).version; // as the Release tab
     // As the Release tab does: version-bump PRs never go in the notes.
     const facts = { ...all, prerelease, prs: all.prs.filter((pr) => !pr.versionBump && !exclude.includes(pr.number)) };
     return {

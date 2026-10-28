@@ -75,6 +75,7 @@ export interface ToolContext {
     since: string | null,
     prerelease: boolean,
     exclude: number[],
+    version: string | null, // as given, or null for the next one
   ): Promise<{ facts: ReleaseFacts; templates: { slack: string; github: string }; baseBranch: string; bumpBranch: string; jira: { from: string; to: string } | null }>;
   /** Cuts the release as the Release tab does; throws if one is already being published. */
   publishRelease(appId: string, req: { facts: ReleaseFacts; githubNotes: string; prerelease: boolean; updateJira: boolean; dryRun: boolean }): Promise<unknown>;
@@ -150,6 +151,12 @@ async function jiraTicket(key: string) {
 }
 
 const commitLine = (cwd: string, ref: string) => git(cwd, ["log", "-1", "--format=%h %s", ref, "--"]);
+
+function releaseVersion(version: unknown) {
+  if (version === undefined) return null;
+  if (typeof version !== "string" || !/^\d+\.\d+\.\d+\+\d+$/.test(version.replace(/^v/, ""))) throw new Error("version must look like 1.3.1+3");
+  return version.replace(/^v/, "");
+}
 
 function sinceTag(since: unknown) {
   if (since === undefined) return null;
@@ -332,6 +339,7 @@ const TOOLS: Tool[] = [
         {
           app: APP,
           since: str("The release to start from, e.g. v1.3.1+3 (default: the latest)."),
+          version: str("The version to release, e.g. 1.3.1+57 (default: the next one, as the Release tab suggests)."),
           prerelease: bool("A pre-release (default true)."),
           exclude_prs: { type: "array", description: "PR numbers to leave out.", items: num("A PR number.") },
         },
@@ -340,7 +348,7 @@ const TOOLS: Tool[] = [
     },
     async run(i, ctx) {
       const a = await needApp(ctx, i.app);
-      const d = await ctx.releaseDraft(a.id, sinceTag(i.since), i.prerelease !== false, (i.exclude_prs as number[] | undefined) ?? []);
+      const d = await ctx.releaseDraft(a.id, sinceTag(i.since), i.prerelease !== false, (i.exclude_prs as number[] | undefined) ?? [], releaseVersion(i.version));
       return {
         version: d.facts.version,
         previous: d.facts.previous?.tag ?? null,
@@ -674,6 +682,7 @@ const TOOLS: Tool[] = [
           prerelease: bool("A pre-release (true) or the latest release (false)."),
           update_jira: bool("Move the tickets and comment the release link on them (only if the app's release config has Jira)."),
           since: str("The release to start from (default: the latest)."),
+          version: str("The version to release, e.g. 1.3.1+57 (default: the next one, as the Release tab suggests)."),
           exclude_prs: { type: "array", description: "PR numbers to leave out.", items: num("A PR number.") },
           github_notes: str("The GitHub release body (default: the template's)."),
           dry_run: bool("Make the bump commit locally and stop (default false)."),
@@ -684,7 +693,7 @@ const TOOLS: Tool[] = [
     async prepare(i, ctx) {
       const a = await needApp(ctx, i.app);
       const prerelease = i.prerelease === true;
-      const d = await ctx.releaseDraft(a.id, sinceTag(i.since), prerelease, (i.exclude_prs as number[] | undefined) ?? []);
+      const d = await ctx.releaseDraft(a.id, sinceTag(i.since), prerelease, (i.exclude_prs as number[] | undefined) ?? [], releaseVersion(i.version));
       const notes = typeof i.github_notes === "string" && i.github_notes.trim() ? i.github_notes : d.templates.github;
       if (notes.length > 100_000) throw new Error("the notes are too long");
       const dryRun = i.dry_run === true;
