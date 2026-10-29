@@ -543,7 +543,7 @@ export const shipApi = {
 };
 
 /** Whether a finished build has a file Slack can take. */
-export const SHIPPABLE = (j: Job) => j.status === "succeeded" && ["apk", "appbundle", "ipa"].includes(j.artifact);
+export const SHIPPABLE = (j: Job) => j.status === "succeeded" && ["apk", "appbundle", "ipa", "simulator"].includes(j.artifact);
 
 // ------------------------------------------------------------------ deploys
 
