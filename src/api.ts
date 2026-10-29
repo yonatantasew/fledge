@@ -85,7 +85,13 @@ export interface Device {
   name: string;
   detail: string;
   available: boolean;
+  virtual: boolean; // an Android emulator or an iOS simulator
+  booted?: boolean;
 }
+
+/** The devices a build can go on: the simulator app on simulators, other iOS builds on phones. */
+export const FITS_DEVICE = (j: Pick<Job, "artifact">, d: Pick<Device, "platform" | "virtual">) =>
+  d.platform !== "ios" || (j.artifact === "simulator") === d.virtual;
 
 export interface PlanResult {
   pubGet?: string[] | null;

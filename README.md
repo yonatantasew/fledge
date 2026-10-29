@@ -43,7 +43,7 @@ cached, so a new release shows up on the next reload.
 **Needs:** macOS, Node ≥ 20.11, and `fvm` or `flutter` on `PATH`.
 
 **Optional:**
-- **Installing on devices:** Xcode (`xcrun devicectl`) and the Android SDK (`adb`).
+- **Installing on devices:** Xcode (`xcrun devicectl`, `xcrun simctl`) and the Android SDK (`adb`).
 - **Releases:** `gh`, plus `acli` for Jira and an assistant model for drafting notes.
 - **Shipping and deploying:** a Slack app's bot token (see [Shipping to Slack](#shipping-to-slack)).
 - **The Firebase sign-in badge:** `firebase`.
@@ -251,7 +251,7 @@ shows the whole log.
 | Android | APK, App Bundle | Signing comes from the app's Gradle setup. |
 | iOS | IPA | Export method: App Store, Ad hoc or Development. The `.xcarchive` is kept for Organizer. There is no debug IPA. |
 | iOS | `.app` | A device build, for `xcrun devicectl device install app`. |
-| iOS | Simulator | The app for the iOS simulator, archived as the `.app` and a `.zip` that can be shipped. Debug only: Flutter has no release or profile simulator build. Run it with `xcrun simctl install booted Runner.app`. A config that writes out its commands needs a `commands.ios.simulator` line. |
+| iOS | Simulator | The app for the iOS simulator, archived as the `.app` and a `.zip` that can be shipped. Debug only: Flutter has no release or profile simulator build. Install it from fledge onto a simulator, or by hand with `xcrun simctl install booted Runner.app`. A config that writes out its commands needs a `commands.ios.simulator` line. |
 | iOS | Prepare Xcode | Builds nothing. Sets Xcode up for one flavor; see [Xcode](#xcode). |
 
 **Android: 64-bit ARM phones only** (off by default) compiles the Dart code
@@ -306,10 +306,11 @@ defaults and what the next version is based on:
 
 ## Installing on a device
 
-Finished APK, `.app` and Development or Ad hoc IPA builds have an **Install**
-button. It lists connected phones: Android through `adb` (emulators too), and
-iPhones through `xcrun devicectl`, over cable or Wi-Fi once the phone trusts
-this Mac. **Open the app after installing** is off by default.
+Finished APK, `.app`, simulator and Development or Ad hoc IPA builds have an
+**Install** button. It lists the devices the build can run on: Android phones
+and running emulators through `adb`, iPhones through `xcrun devicectl` (over
+cable or Wi-Fi once the phone trusts this Mac), and iOS simulators through
+`xcrun simctl`. **Open the app after installing** is off by default.
 
 - **Android** uses `adb install -r -d`, which keeps the app's data. If the phone
   refuses, because the installed app is signed with another key or has a
@@ -319,8 +320,10 @@ this Mac. **Open the app after installing** is off by default.
   install through TestFlight. Debug builds are installed but not launched,
   because they need a debugger.
 - App Bundles (`.aab`) can't be installed directly.
-- Simulator apps aren't installed from fledge, which lists physical devices
-  only. Unzip one and run `xcrun simctl install booted Runner.app`.
+- **iOS simulators** take only the Simulator output, and iPhones never do.
+  Running simulators are listed first; picking a shut-down one boots it.
+  fledge unzips the app and installs it with `xcrun simctl install`; unlike on
+  a phone, a debug build launches without a debugger.
 
 ## Shipping to Slack
 

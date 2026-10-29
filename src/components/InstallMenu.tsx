@@ -1,7 +1,7 @@
 import { Download04Icon, Loading03Icon, RotateClockwiseIcon, SmartPhone01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
-import { api, type Device, type Job } from "@/api";
+import { api, FITS_DEVICE, type Device, type Job } from "@/api";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -14,19 +14,20 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
-/** Install a finished build on a connected phone; offers Replace when the phone refuses an update. */
+/** Install a finished build on a connected phone, an emulator or a simulator; offers Replace when the device refuses an update. */
 export function InstallMenu({ job }: { job: Job }) {
   const [devices, setDevices] = useState<Device[] | null>(null);
   const [launch, setLaunch] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const installing = job.install?.state === "installing";
   const needsReplace = job.install?.state === "needs-replace";
+  const simulator = job.artifact === "simulator";
 
   async function refresh() {
     setDevices(null);
     setError(null);
     try {
-      setDevices((await api.devices()).filter((d) => d.platform === job.platform));
+      setDevices((await api.devices()).filter((d) => d.platform === job.platform && FITS_DEVICE(job, d)));
     } catch (e) {
       setError((e as Error).message);
       setDevices([]);
@@ -51,7 +52,7 @@ export function InstallMenu({ job }: { job: Job }) {
               variant="ghost"
               size="icon"
               className="size-7"
-              aria-label="Install on a device"
+              aria-label={simulator ? "Install on a simulator" : "Install on a device"}
               disabled={installing}
               onClick={(e) => e.stopPropagation()}
             >
@@ -62,11 +63,11 @@ export function InstallMenu({ job }: { job: Job }) {
             </Button>
           </DropdownMenuTrigger>
         </TooltipTrigger>
-        <TooltipContent>{installing ? `Installing on ${job.install?.device}…` : "Install on a device"}</TooltipContent>
+        <TooltipContent>{installing ? `Installing on ${job.install?.device}…` : simulator ? "Install on a simulator" : "Install on a device"}</TooltipContent>
       </Tooltip>
       <DropdownMenuContent align="end" className="w-72" onClick={(e) => e.stopPropagation()}>
         <DropdownMenuLabel className="flex items-center justify-between">
-          {job.platform === "ios" ? "iPhones" : "Android devices"}
+          {simulator ? "iOS simulators" : job.platform === "ios" ? "iPhones" : "Phones and emulators"}
           <Button
             variant="ghost"
             size="icon"
@@ -89,9 +90,11 @@ export function InstallMenu({ job }: { job: Job }) {
         )}
         {devices?.length === 0 && (
           <DropdownMenuItem disabled className="whitespace-normal">
-            {job.platform === "ios"
-              ? "No iPhone found. Connect one by cable (or on the same Wi-Fi) and trust this Mac."
-              : "No device found. Connect a phone with USB debugging on, or start an emulator."}
+            {simulator
+              ? "No iOS simulator found. Add one in Xcode: Window → Devices and Simulators."
+              : job.platform === "ios"
+                ? "No iPhone found. Connect one by cable (or on the same Wi-Fi) and trust this Mac."
+                : "No device found. Connect a phone with USB debugging on, or start an emulator."}
           </DropdownMenuItem>
         )}
         {devices?.map((d) => (

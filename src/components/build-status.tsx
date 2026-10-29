@@ -19,7 +19,7 @@ export const STATUS: Record<JobStatus, { icon: IconSvgElement; className: string
 
 export const INSTALLABLE = (j: Job) =>
   j.status === "succeeded" &&
-  (j.artifact === "apk" || j.artifact === "app" || (j.artifact === "ipa" && !/--export-method=app-store/.test(j.command)));
+  (j.artifact === "apk" || j.artifact === "app" || j.artifact === "simulator" || (j.artifact === "ipa" && !/--export-method=app-store/.test(j.command)));
 
 export const ARM64_ONLY = (j: Job) => j.command.includes("--target-platform android-arm64");
 

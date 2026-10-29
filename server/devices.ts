@@ -1,9 +1,11 @@
-// Connected phones, and installing a finished build onto one.
+// Connected phones, emulators and simulators, and installing a finished build
+// onto one.
 //
-// Android goes through adb, iOS through `xcrun devicectl` (which takes a .app,
-// so an IPA is unpacked first). A device id from the request is only used if
-// it matches a device the tools list right now, so nothing typed in the page
-// reaches a command line.
+// Android goes through adb, which lists emulators like phones. iOS phones go
+// through `xcrun devicectl` (which takes a .app, so an IPA is unpacked first),
+// iOS simulators through `xcrun simctl`. A device id from the request is only
+// used if it matches a device the tools list right now, so nothing typed in
+// the page reaches a command line.
 
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -20,6 +22,8 @@ export interface Device {
   name: string;
   detail: string; // model / OS version
   available: boolean;
+  virtual: boolean; // an Android emulator or an iOS simulator
+  booted?: boolean; // iOS simulators: false means installing boots it first
 }
 
 const ADB = [process.env.ANDROID_HOME, path.join(process.env.HOME ?? "", "Library/Android/sdk")]
@@ -28,8 +32,12 @@ const ADB = [process.env.ANDROID_HOME, path.join(process.env.HOME ?? "", "Librar
   .find((p) => existsSync(p)) ?? "adb";
 
 export async function listDevices(): Promise<Device[]> {
-  const [android, ios] = await Promise.all([androidDevices().catch(() => []), iosDevices().catch(() => [])]);
-  return [...android, ...ios];
+  const [android, ios, sims] = await Promise.all([
+    androidDevices().catch(() => []),
+    iosDevices().catch(() => []),
+    iosSimulators().catch(() => []),
+  ]);
+  return [...android, ...ios, ...sims];
 }
 
 /** `adb devices -l` lines: "<serial>  device usb:… model:RT6 …". */
@@ -42,18 +50,60 @@ export function parseAdb(out: string): Device[] {
     .map((l) => {
       const [id, state] = l.split(/\s+/);
       const model = /model:(\S+)/.exec(l)?.[1]?.replace(/_/g, " ");
+      const virtual = id.startsWith("emulator-");
+      const where = virtual ? `Emulator · ${id}` : id;
       return {
         platform: "android" as const,
         id,
         name: model ?? id,
-        detail: state === "device" ? id : `${id} · ${state}`, // "unauthorized" = accept the prompt on the phone
+        detail: state === "device" ? where : `${where} · ${state}`, // "unauthorized" = accept the prompt on the phone
         available: state === "device",
+        virtual,
       };
     });
 }
 
 async function androidDevices() {
-  return parseAdb((await run(ADB, ["devices", "-l"], { timeout: 15_000 })).stdout);
+  const devices = parseAdb((await run(ADB, ["devices", "-l"], { timeout: 15_000 })).stdout);
+  // An emulator's model is the system image ("sdk gphone64 arm64"); its AVD name says which one it is.
+  await Promise.all(
+    devices
+      .filter((d) => d.virtual && d.available)
+      .map(async (d) => {
+        const out = await run(ADB, ["-s", d.id, "emu", "avd", "name"], { timeout: 5_000 }).then((r) => r.stdout, () => "");
+        const avd = out.split("\n")[0]?.trim();
+        if (avd && avd !== "OK") d.name = avd.replace(/_/g, " ");
+      }),
+  );
+  return devices;
+}
+
+/** `xcrun simctl list devices available -j`: the iOS simulators, booted ones first. */
+export function parseSimctl(json: string): Device[] {
+  const data = JSON.parse(json) as { devices: Record<string, { udid: string; name: string; state: string; isAvailable?: boolean }[]> };
+  const sims: Device[] = [];
+  for (const [runtime, list] of Object.entries(data.devices)) {
+    const os = /SimRuntime\.iOS-(\d+)-(\d+)/.exec(runtime);
+    if (!os) continue; // watchOS, tvOS, visionOS
+    for (const d of list) {
+      if (d.isAvailable === false) continue;
+      const booted = d.state === "Booted";
+      sims.push({
+        platform: "ios",
+        id: d.udid,
+        name: d.name,
+        detail: `Simulator · iOS ${os[1]}.${os[2]}${booted ? " · running" : ""}`,
+        available: true, // a shut-down simulator is booted on install
+        virtual: true,
+        booted,
+      });
+    }
+  }
+  return sims.sort((a, b) => Number(b.booted) - Number(a.booted));
+}
+
+async function iosSimulators() {
+  return parseSimctl((await run("xcrun", ["simctl", "list", "devices", "available", "-j"], { timeout: 30_000, maxBuffer: 16 << 20 })).stdout);
 }
 
 async function iosDevices(): Promise<Device[]> {
@@ -82,6 +132,7 @@ async function iosDevices(): Promise<Device[]> {
           .join(" · "),
         // "unavailable" = not reachable now; "disconnected" = known transport, devicectl reconnects on demand.
         available: d.connectionProperties.pairingState === "paired" && d.connectionProperties.tunnelState !== "unavailable",
+        virtual: false,
       }));
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -100,13 +151,19 @@ export interface InstallTarget {
 
 export class NeedsReplace extends Error {}
 
-/** Why a build can't be installed directly, or null when it can. */
-export function installBlocker(t: Pick<InstallTarget, "platform" | "artifact" | "exportMethod">): string | null {
+/** Why a build can't be installed directly, or null when it can. With a device, also whether it can go on that one. */
+export function installBlocker(
+  t: Pick<InstallTarget, "platform" | "artifact" | "exportMethod">,
+  device?: Pick<Device, "platform" | "virtual" | "name">,
+): string | null {
   if (t.artifact === "appbundle") return "App Bundles only install through Play; build an APK";
   if (t.artifact === "xcode") return "Prepare Xcode doesn't produce an app";
-  if (t.artifact === "simulator") return "a simulator app only runs on the iOS simulator: unzip it, then xcrun simctl install booted Runner.app";
   if (t.platform === "ios" && t.artifact === "ipa" && t.exportMethod === "app-store")
     return "App Store IPAs only install through TestFlight; use Development or Ad hoc, or a .app";
+  if (device && device.platform === "ios") {
+    if (t.artifact === "simulator" && !device.virtual) return `a simulator app doesn't run on ${device.name}; build an IPA or a .app for a phone`;
+    if (t.artifact !== "simulator" && device.virtual) return `${device.name} is a simulator; it only runs the Simulator output`;
+  }
   return null;
 }
 
@@ -116,9 +173,10 @@ export async function install(
   opts: { launch: boolean; replace: boolean },
   log: (s: string) => Promise<void>,
 ) {
-  const blocked = installBlocker(t);
+  const blocked = installBlocker(t, device);
   if (blocked) throw new Error(blocked);
   if (t.platform === "android") return installAndroid(t, device, opts, log);
+  if (device.virtual) return installSimulator(t, device, opts, log);
   return installIos(t, device, opts, log);
 }
 
@@ -194,5 +252,32 @@ async function installIos(t: InstallTarget, d: Device, opts: { launch: boolean; 
     }
   } finally {
     if (tmp) await rm(tmp, { recursive: true, force: true });
+  }
+}
+
+async function installSimulator(t: InstallTarget, d: Device, opts: { launch: boolean; replace: boolean }, log: (s: string) => Promise<void>) {
+  const tmp = await mkdtemp(path.join(tmpdir(), "fledge-sim-"));
+  try {
+    // The simulator app is shipped as a zip with the .app at its top.
+    await log("Unpacking the simulator app…\n");
+    await run("ditto", ["-x", "-k", t.file, tmp], { timeout: 300_000 });
+    const name = (await readdir(tmp)).find((f) => f.endsWith(".app"));
+    if (!name) throw new Error("no .app inside the simulator zip");
+    const app = path.join(tmp, name);
+    if (!d.booted) {
+      // bootstatus -b boots it and waits until it can take an install.
+      await step(log, "xcrun", ["simctl", "bootstatus", d.id, "-b"], 300_000);
+    }
+    await run("open", ["-a", "Simulator"], { timeout: 30_000 }).catch(() => {}); // show it; the install works without
+    if (opts.replace) {
+      await step(log, "xcrun", ["simctl", "uninstall", d.id, t.bundleId]).catch(() => {});
+    }
+    await step(log, "xcrun", ["simctl", "install", d.id, app]);
+    if (opts.launch) {
+      // Unlike a phone, the simulator runs a debug build without a debugger.
+      await step(log, "xcrun", ["simctl", "launch", "--terminate-running-process", d.id, t.bundleId], 60_000);
+    }
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
   }
 }

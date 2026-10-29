@@ -887,6 +887,8 @@ async function installable(job: Job, deviceId: unknown): Promise<{ device: Devic
   if (job.install?.state === "installing") return { status: 409, error: "already installing this build" };
   const device = (await listDevices()).find((d) => d.id === deviceId && d.platform === job.platform);
   if (!device) return { status: 404, error: "that device is not connected" };
+  const wrongKind = installBlocker({ platform: job.platform, artifact: job.artifact, exportMethod: exportMethodOf(job) }, device);
+  if (wrongKind) return { status: 400, error: wrongKind };
   if (!device.available) return { status: 409, error: `${device.name} is not ready (${device.detail})` };
   return { device, file: job.artifactFile };
 }
