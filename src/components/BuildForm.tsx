@@ -23,6 +23,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useFlavorLabel, useProject } from "@/project";
+import { openConnections } from "./Connections";
 import { DeployDialog } from "./DeployDialog";
 import { VersionsDialog } from "./VersionsDialog";
 
@@ -671,10 +672,17 @@ function PlanPreview({ plan, error }: { plan: PlanResult | null; error: string |
           </li>
         ))}
         {plan.skipped.map((s, i) => (
-          <li key={`s${i}`} className="flex items-center gap-2 px-2 py-1 text-sm text-muted-foreground line-through">
+          <li key={`s${i}`} className="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 py-1 text-sm text-muted-foreground">
             <HugeiconsIcon icon={PLATFORM_ICON[s.platform]} className="size-4 shrink-0" />
-            {flavorLabel(s.flavor)} {MODE_LABEL[s.mode]}
-            <span className="ml-auto text-xs no-underline">{s.reason.split(" — ")[0]}</span>
+            <span className="line-through">
+              {flavorLabel(s.flavor)} {MODE_LABEL[s.mode]}
+            </span>
+            <span className="ml-auto text-xs">{s.reason.split(" — ")[0]}</span>
+            {s.connection && (
+              <Button variant="outline" size="sm" className="h-6 px-2 text-xs" onClick={openConnections}>
+                Fix
+              </Button>
+            )}
           </li>
         ))}
       </ul>

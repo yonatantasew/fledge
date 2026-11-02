@@ -40,6 +40,10 @@ const HEALTH = {
 
 const RANK = { error: 0, warn: 1, ok: 2, off: 3 } as const;
 
+const OPEN = "fledge:open-connections";
+/** Opens the Connections dialog from anywhere, checked afresh (a skipped build's Fix button). */
+export const openConnections = () => window.dispatchEvent(new Event(OPEN));
+
 /** The app's connection checks, refetched when asked. */
 function useConnections(appId: string) {
   const [data, setData] = useState<{ checkedAt: number; connections: Connection[] } | null>(null);
@@ -72,6 +76,11 @@ export function ConnectionsButton({ appId, appName, openNow, onOpened }: { appId
     onOpened?.();
   }, [openNow]);
   const { data, checking, error, check } = useConnections(appId);
+  useEffect(() => {
+    const show = () => (setOpen(true), check(true));
+    window.addEventListener(OPEN, show);
+    return () => window.removeEventListener(OPEN, show);
+  }, [check]);
   const [names, setNames] = useState<string[]>([]);
   useEffect(() => {
     if (open) void projectsApi.envNames(appId).then((r) => setNames(r.names), () => {});

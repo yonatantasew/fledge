@@ -12,6 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useFlavorLabel, useProject } from "@/project";
 import { cn } from "@/lib/utils";
 import { MODE_LABEL, PLATFORM_ICON } from "./BuildForm";
+import { openConnections } from "./Connections";
 
 // How a deploy posts: the route's setting, which a deploy can change.
 const HOW: { id: string; post: PostMode; onFailure: OnFailure; label: string; hint: string }[] = [
@@ -163,7 +164,16 @@ export function DeployDialog({
               Posts to <span className="font-medium text-foreground">{preview.channel}</span> · {preview.checkout.branch} @ {preview.checkout.sha.slice(0, 8)} ·
               changes since {preview.since ? `the last deploy (${preview.since.slice(0, 8)})` : "the last release"}
             </p>
-            {preview.skipped.length > 0 && <p className="text-xs text-warning">Skipped: {preview.skipped.map((s) => s.reason).join("; ")}</p>}
+            {preview.skipped.length > 0 && (
+              <p className="text-xs text-warning">
+                Skipped: {preview.skipped.map((s) => s.reason).join("; ")}
+                {preview.skipped.some((s) => s.connection) && (
+                  <Button variant="link" size="sm" className="h-auto px-1 text-xs" onClick={openConnections}>
+                    Fix in Connections
+                  </Button>
+                )}
+              </p>
+            )}
             <div className="space-y-1.5">
               <Label htmlFor="deploy-notes">Notes (Slack formatting; the files are listed below them when it posts)</Label>
               <Textarea id="deploy-notes" rows={14} value={notes} onChange={(e) => setNotes(e.target.value)} className="font-mono text-xs" />
