@@ -20,6 +20,7 @@ import { Mascot } from "@/components/Mascot";
 import { OutsideApprovals } from "@/components/OutsideApprovals";
 import { BuildForm } from "@/components/BuildForm";
 import { ConfigDialog } from "@/components/ConfigDialog";
+import { ConnectionsButton } from "@/components/Connections";
 import { FirebaseLogin } from "@/components/FirebaseLogin";
 import { BuildDetails } from "@/components/BuildDetails";
 import { BuildTiles } from "@/components/BuildTiles";
@@ -253,6 +254,7 @@ export function App() {
                   )}
                 </>
               )}
+              {current?.ready && <ConnectionsButton key={current.id} appId={current.id} appName={current.name} />}
               <FirebaseLogin />
               <Tooltip>
                 <TooltipTrigger asChild>

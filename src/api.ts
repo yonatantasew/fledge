@@ -398,6 +398,16 @@ export interface CommandPreview {
 
 export type BuildMode = "debug" | "profile" | "release";
 
+/** One service an app's builds and releases use, as the server checked it (server/connections.ts). */
+export interface Connection {
+  id: "github" | "jira" | "slack" | "firebase" | "sentry" | "signing";
+  name: string;
+  health: "ok" | "warn" | "error" | "off";
+  summary: string;
+  details: string[];
+  fix?: string;
+}
+
 export const projectsApi = {
   list: () => send<ProjectSummary[]>("GET", "/api/projects"),
   candidates: () => send<string[]>("GET", "/api/projects/candidates"),
@@ -407,6 +417,8 @@ export const projectsApi = {
   config: (id: string) => send<ConfigFile>("GET", `/api/projects/${id}/config`),
   saveConfig: (id: string, config: unknown) => send<{ file: string }>("PUT", `/api/projects/${id}/config`, { config }),
   writeCommands: (id: string, config: unknown) => post<{ config: Record<string, unknown> }>(`/api/projects/${id}/commands`, { config }),
+  connections: (id: string, fresh = false) =>
+    send<{ checkedAt: number; connections: Connection[] }>("GET", `/api/projects/${id}/connections${fresh ? "?fresh=1" : ""}`),
   previewCommands: (id: string, config: unknown, mode: BuildMode) =>
     post<{ mode: BuildMode; sha: string; commands: CommandPreview[] }>(`/api/projects/${id}/commands/preview`, { config, mode }),
 };
