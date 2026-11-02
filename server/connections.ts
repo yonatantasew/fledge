@@ -360,15 +360,10 @@ async function signing(p: Project): Promise<Connection> {
   return judgeSigning({ used: true, team: xcodeTeam(pbx), identities: parseIdentities(out) });
 }
 
-const PROBES = [github, jira, slack, firebase, sentry, signing];
+const PROBES: Record<Connection["id"], (p: Project) => Promise<Connection>> = { github, jira, slack, firebase, sentry, signing };
+export const CONNECTION_IDS = Object.keys(PROBES) as Connection["id"][];
 
-/** Every service, checked in parallel; a probe that throws becomes an error card, not a failed request. */
-export async function checkConnections(p: Project): Promise<{ checkedAt: number; connections: Connection[] }> {
-  const ids: Connection["id"][] = ["github", "jira", "slack", "firebase", "sentry", "signing"];
-  const connections = await Promise.all(
-    PROBES.map((probe, i) =>
-      probe(p).catch((e: Error): Connection => ({ id: ids[i], name: ids[i], health: "error", summary: "The check itself failed", details: [e.message] })),
-    ),
-  );
-  return { checkedAt: Date.now(), connections };
+/** One service, checked; a probe that throws becomes an error card, not a failed request. */
+export function checkConnection(p: Project, id: Connection["id"]): Promise<Connection> {
+  return PROBES[id](p).catch((e: Error): Connection => ({ id, name: id, health: "error", summary: "The check itself failed", details: [e.message] }));
 }
