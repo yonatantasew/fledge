@@ -82,6 +82,12 @@ shows the whole config as JSON, for build commands, defines, deploy routes
 and the rest. Both edit the same config, so what the form doesn't show is
 kept as written.
 
+Fields for other services suggest what this Mac is signed in to, and still
+take any text: the GitHub accounts `gh` knows and that account's repos, the
+Jira site `acli` uses and its projects, and the Slack channels the bot can
+see (the ones it's already in first). Once an app is added, fledge opens its
+[connection checks](#connections), so what's not set up shows straight away.
+
 Each app's config is the first of these that exists:
 
 1. a file given with `fledge --config <file>` when the app was opened
