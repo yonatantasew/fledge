@@ -98,7 +98,7 @@ somewhere else.
 The plug button in the header checks every service the current app's builds
 and releases use, for real, from this Mac, and says how to fix what isn't
 working. A dot on the button means something needs attention. The checks
-only read; nothing is changed.
+only read.
 
 | Service | Checked |
 | --- | --- |
@@ -106,10 +106,24 @@ only read; nothing is changed.
 | Jira | `acli` is signed in to `release.jira.site`. |
 | Slack | The bot token works, has the permissions fledge uses, and is in every channel the app posts to. |
 | Firebase | The `firebase` CLI's sign-in still works. |
-| Sentry | When the app uses Sentry: `SENTRY_AUTH_TOKEN`, `SENTRY_ORG` and `SENTRY_PROJECT` are in fledge's environment (builds get that environment, fixed when fledge starts), the token can read that project on its region, and `sentry-cli` is on the PATH. |
+| Sentry | When the app uses Sentry: builds get `SENTRY_AUTH_TOKEN`, `SENTRY_ORG` and `SENTRY_PROJECT`, the token can read that project on its region, and `sentry-cli` is on the PATH. |
 | iOS signing | A distribution certificate is installed for the Xcode project's team. Ad hoc and App Store IPAs need one. |
 
 Services an app doesn't use are listed as not used.
+
+### Build variables
+
+Tokens and settings a build reads from its environment, such as Sentry's,
+can be kept by fledge instead of in your shell profile. Set them on the
+service's card, or under **Build variables** for anything else. Each value
+goes in this Mac's login Keychain (service `fledge-env`, account
+`<app>/<NAME>`); only the names are written to
+`~/.config/fledge/env/<app>.json`, and values never come back to the page.
+Every build step of the app gets fledge's own environment with these on top,
+so a value set here wins over an exported one, and a change applies to the
+next build without restarting fledge. Names that change how a build runs
+(`PATH`, `HOME`, `DYLD_*`, `NODE_*`, `GIT_*`, `GRADLE_OPTS` and the like)
+can't be set.
 
 ## Config format
 
