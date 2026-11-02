@@ -1637,7 +1637,7 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
       channel: r.channel,
       version: r.plan.version,
       checkout: { branch: r.plan.checkout.branch, sha: r.head },
-      builds: r.plan.builds.map((x) => ({ platform: x.platform, flavor: x.flavor, mode: x.mode, artifact: x.artifact })),
+      builds: r.plan.builds.map((x) => ({ platform: x.platform, flavor: x.flavor, mode: x.mode, artifact: x.artifact, warnings: x.warnings })),
       skipped: r.plan.skipped,
       since: n.since,
       notes: n.notes,

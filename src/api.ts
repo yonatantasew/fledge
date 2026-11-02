@@ -618,7 +618,7 @@ export interface DeployPreview {
   channel: string;
   version: string;
   checkout: { branch: string; sha: string };
-  builds: { platform: Platform; flavor: string; mode: Mode; artifact: string }[];
+  builds: { platform: Platform; flavor: string; mode: Mode; artifact: string; warnings?: string[] }[];
   skipped: SkippedBuild[];
   since: string | null;
   notes: string;

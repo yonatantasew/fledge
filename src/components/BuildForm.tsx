@@ -654,7 +654,7 @@ function PlanPreview({ plan, error }: { plan: PlanResult | null; error: string |
       </Label>
       <ul className="space-y-1">
         {plan.builds.map((b, i) => (
-          <li key={i} className="flex items-center gap-2 rounded-md px-2 py-1 text-sm hover:bg-muted">
+          <li key={i} className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md px-2 py-1 text-sm hover:bg-muted">
             <HugeiconsIcon icon={PLATFORM_ICON[b.platform]} className="size-4 shrink-0 text-muted-foreground" />
             <span className="font-medium">{flavorLabel(b.flavor)}</span>
             <span className="text-muted-foreground">{MODE_LABEL[b.mode]}</span>
@@ -669,6 +669,15 @@ function PlanPreview({ plan, error }: { plan: PlanResult | null; error: string |
                 <TooltipContent className="max-w-64">{b.notes.join(" · ")}</TooltipContent>
               </Tooltip>
             )}
+            {b.warnings?.length ? (
+              <span className="ml-auto flex basis-full items-center gap-1 pl-6 text-xs text-warning">
+                <HugeiconsIcon icon={Alert02Icon} className="size-3.5 shrink-0" />
+                Might fail: {b.warnings.join("; ")}
+                <Button variant="link" size="sm" className="h-auto px-1 text-xs" onClick={openConnections}>
+                  Check
+                </Button>
+              </span>
+            ) : null}
           </li>
         ))}
         {plan.skipped.map((s, i) => (

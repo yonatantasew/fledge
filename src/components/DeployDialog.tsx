@@ -164,6 +164,18 @@ export function DeployDialog({
               Posts to <span className="font-medium text-foreground">{preview.channel}</span> · {preview.checkout.branch} @ {preview.checkout.sha.slice(0, 8)} ·
               changes since {preview.since ? `the last deploy (${preview.since.slice(0, 8)})` : "the last release"}
             </p>
+            {preview.builds.some((b) => b.warnings?.length) && (
+              <p className="text-xs text-warning">
+                Might fail:{" "}
+                {preview.builds
+                  .filter((b) => b.warnings?.length)
+                  .map((b) => `${flavorLabel(b.flavor)} ${MODE_LABEL[b.mode]} ${b.artifact}: ${b.warnings!.join("; ")}`)
+                  .join(" · ")}
+                <Button variant="link" size="sm" className="h-auto px-1 text-xs" onClick={openConnections}>
+                  Check in Connections
+                </Button>
+              </p>
+            )}
             {preview.skipped.length > 0 && (
               <p className="text-xs text-warning">
                 Skipped: {preview.skipped.map((s) => s.reason).join("; ")}
