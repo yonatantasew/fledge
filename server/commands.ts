@@ -52,6 +52,7 @@ export interface PlannedBuild extends Target {
   argv: string[]; // the complete command line, executable first
   symbolsDir: string | null;
   notes: string[];
+  warnings?: string[]; // a connection check thinks it might fail
 }
 
 export interface SkippedBuild extends Target {

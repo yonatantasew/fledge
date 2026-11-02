@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { blockedBy, judgeFirebase, judgeGithub, judgeJira, judgeSentry, judgeSigning, judgeSlack, parseIdentities, sentryUrl, xcodeTeam } from "./connections.ts";
+import { blockedBy, type Connection, judgeFirebase, judgeGithub, judgeJira, judgeSentry, judgeSigning, judgeSlack, parseIdentities, sentryUrl, xcodeTeam } from "./connections.ts";
 
 test("GitHub: off without a repo, then who's signed in and whether they can push", () => {
   const base = { repo: "acme/app", account: null, ghMissing: false, login: "ana", canPush: true };
@@ -90,20 +90,25 @@ test("iOS signing: a distribution certificate for the app's team", () => {
 test("a broken connection skips only the builds it would fail, and only when the check is sure", () => {
   const sentry = { used: true, androidUpload: true, env: { token: true, org: "acme", project: "app" }, stored: [], cli: "2.42.2", url: "https://de.sentry.io", probe: { status: 404 } };
   const release = { platform: "android", mode: "release", artifact: "appbundle" } as const;
+  const sure = (b: Parameters<typeof blockedBy>[0], m: Parameters<typeof blockedBy>[1], c: Connection) => blockedBy(b, m, [c]).sure?.id ?? null;
+  const maybe = (b: Parameters<typeof blockedBy>[0], m: Parameters<typeof blockedBy>[1], c: Connection) => blockedBy(b, m, [c]).maybe.map((x) => x.id);
   const typo = judgeSentry(sentry);
-  assert.equal(blockedBy(release, "app-store", [typo])?.id, "sentry");
-  assert.equal(blockedBy({ ...release, mode: "profile" }, "app-store", [typo]), null);
-  assert.equal(blockedBy(release, "app-store", [judgeSentry({ ...sentry, probe: null })]), null, "unreachable might be the network");
-  assert.equal(blockedBy(release, "app-store", [judgeSentry({ ...sentry, androidUpload: false })]), null, "nothing uploads");
+  assert.equal(sure(release, "app-store", typo), "sentry");
+  assert.equal(sure({ ...release, mode: "profile" }, "app-store", typo), null);
+  assert.equal(sure(release, "app-store", judgeSentry({ ...sentry, probe: null })), null, "unreachable might be the network");
+  assert.equal(sure(release, "app-store", judgeSentry({ ...sentry, androidUpload: false })), null, "nothing uploads");
   const skipping = judgeSentry({ ...sentry, skipUpload: true });
-  assert.equal(blockedBy(release, "app-store", [skipping]), null, "the app's own switch turns the upload off");
+  assert.equal(sure(release, "app-store", skipping), null, "the app's own switch turns the upload off");
   assert.match(skipping.details.join("\n"), /SENTRY_SKIP_UPLOAD=1/);
+  const noCli = judgeSentry({ ...sentry, cli: null, probe: { status: 200 } });
+  assert.deepEqual([sure(release, "app-store", noCli), maybe(release, "app-store", noCli)], [null, ["sentry"]], "the Gradle plugin has its own sentry-cli");
 
+  // Xcode may sign with a cloud-managed certificate, so signing only warns.
   const devOnly = judgeSigning({ used: true, team: "AAAAAAAAAA", identities: ["Apple Development: Ana (AAAAAAAAAA)"] });
   const ipa = { platform: "ios", mode: "release", artifact: "ipa" } as const;
-  assert.equal(blockedBy(ipa, "ad-hoc", [devOnly])?.id, "signing");
-  assert.equal(blockedBy(ipa, "development", [devOnly]), null);
-  assert.equal(blockedBy({ ...ipa, artifact: "simulator" }, "ad-hoc", [devOnly]), null);
+  assert.deepEqual([sure(ipa, "ad-hoc", devOnly), maybe(ipa, "ad-hoc", devOnly)], [null, ["signing"]]);
+  assert.deepEqual(maybe(ipa, "development", devOnly), []);
+  assert.deepEqual(maybe({ ...ipa, artifact: "simulator" }, "ad-hoc", devOnly), []);
   const none = judgeSigning({ used: true, team: "AAAAAAAAAA", identities: [] });
-  assert.equal(blockedBy(ipa, "development", [none])?.id, "signing");
+  assert.deepEqual(maybe(ipa, "development", none), ["signing"]);
 });

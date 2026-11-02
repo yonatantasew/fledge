@@ -28,11 +28,12 @@ export interface Connection {
   needs?: string[]; // build variables that would fix it, which the UI offers to set
   stored?: string[]; // build variables of this service that fledge keeps for the app
   variables?: string[]; // all the build variables this service reads
-  blocks?: Blocks; // the builds that would fail, set only when the check is sure
+  blocks?: Blocks; // the builds that would or might fail
 }
 
 /** Builds a broken connection fails: a build matches when it fits every field given. */
 export interface Blocks {
+  maybe?: boolean; // might fail, the check can't be sure: warned about, not skipped
   platforms?: Platform[];
   modes?: Mode[];
   artifacts?: string[];
@@ -42,15 +43,14 @@ export interface Blocks {
 // The checks that can say a build would fail.
 export const BLOCKING: Connection["id"][] = ["sentry", "signing"];
 
-/** The first connection that says this build would fail, if any. */
-export function blockedBy(b: { platform: Platform; mode: Mode; artifact: string }, exportMethod: ExportMethod, cards: Connection[]): Connection | null {
+/** What the checks say about a build: the first that's sure it fails, and any that think it might. */
+export function blockedBy(b: { platform: Platform; mode: Mode; artifact: string }, exportMethod: ExportMethod, cards: Connection[]): { sure: Connection | null; maybe: Connection[] } {
   const fits = <T,>(list: T[] | undefined, v: T) => !list || list.includes(v);
-  return (
-    cards.find(
-      ({ blocks: k }) =>
-        k && fits(k.platforms, b.platform) && fits(k.modes, b.mode) && fits(k.artifacts, b.artifact) && (b.artifact !== "ipa" || fits(k.exportMethods, exportMethod)),
-    ) ?? null
+  const hit = cards.filter(
+    ({ blocks: k }) =>
+      k && fits(k.platforms, b.platform) && fits(k.modes, b.mode) && fits(k.artifacts, b.artifact) && (b.artifact !== "ipa" || fits(k.exportMethods, exportMethod)),
   );
+  return { sure: hit.find((c) => !c.blocks?.maybe) ?? null, maybe: hit.filter((c) => c.blocks?.maybe) };
 }
 
 // ------------------------------------------------------------------- judges
@@ -198,7 +198,8 @@ export function judgeSentry(f: {
       blocks,
     };
   if (p.status !== 200) return { ...c, health: "error", summary: `Sentry answered ${p.status}`, details: [...details, ...(p.detail ? [p.detail] : [])], fix: "Try again in a minute.", stored };
-  if (!f.cli) return { ...c, health: "error", summary: "sentry-cli isn't installed", details, fix: "npm install -g @sentry/cli (the version your build asks for), then restart fledge.", stored, blocks };
+  // The Gradle plugin brings its own sentry-cli, so a build may not need this one.
+  if (!f.cli) return { ...c, health: "error", summary: "sentry-cli isn't installed", details, fix: "npm install -g @sentry/cli (the version your build asks for), then restart fledge.", stored, blocks: blocks && { ...blocks, maybe: true } };
   return { ...c, health: "ok", summary: `${f.env.org}/${f.env.project}`, details: [...details, "The token can read this project"], stored };
 }
 
@@ -217,8 +218,8 @@ export function judgeSigning(f: { used: boolean; team: string | null; identities
       summary: `No distribution certificate for ${team}`,
       details: details.length ? details : [`No signing certificates for ${team}`],
       fix: "Ad hoc and App Store IPAs need one. Sign in to Xcode → Settings → Accounts with an account in the team, and Xcode makes it when you next export.",
-      // Without a development certificate either, no IPA exports.
-      blocks: { platforms: ["ios"], artifacts: ["ipa"], exportMethods: dev.length ? ["app-store", "ad-hoc"] : undefined },
+      // Only a warning: Xcode can sign with a certificate Apple keeps in the cloud, which isn't listed here.
+      blocks: { maybe: true, platforms: ["ios"], artifacts: ["ipa"], exportMethods: dev.length ? ["app-store", "ad-hoc"] : undefined },
     };
   return { ...c, health: "ok", summary: `Can sign for ${team}`, details };
 }

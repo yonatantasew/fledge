@@ -850,12 +850,14 @@ async function plan(body: unknown) {
     else if ("build" in r) builds.push(r.build);
     else skipped.push(r.skipped);
   }
-  // A build the connection checks are sure would fail (no Sentry project, no
-  // distribution certificate) is skipped up front, saying what to fix.
+  // A build the connection checks are sure would fail (no such Sentry project)
+  // is skipped up front, saying what to fix; one they think might fail (no
+  // distribution certificate on this Mac) is built, with a warning.
   if (builds.length) {
     const cards = await Promise.all(BLOCKING.map((id) => connectionCheck(project, id).result));
     for (const b of [...builds]) {
-      const c = blockedBy(b, parsed.options.exportMethod, cards);
+      const { sure: c, maybe } = blockedBy(b, parsed.options.exportMethod, cards);
+      if (maybe.length) b.warnings = maybe.map((m) => `${m.name}: ${m.summary}`);
       if (!c) continue;
       builds.splice(builds.indexOf(b), 1);
       skipped.push({ platform: b.platform, flavor: b.flavor, mode: b.mode, reason: `${c.name}: ${c.summary} — ${c.fix ?? "see Connections"}`, connection: c.id });
