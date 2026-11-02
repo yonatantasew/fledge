@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { judgeFirebase, judgeGithub, judgeJira, judgeSentry, judgeSigning, judgeSlack, parseIdentities, sentryUrl, xcodeTeam } from "./connections.ts";
+import { blockedBy, judgeFirebase, judgeGithub, judgeJira, judgeSentry, judgeSigning, judgeSlack, parseIdentities, sentryUrl, xcodeTeam } from "./connections.ts";
 
 test("GitHub: off without a repo, then who's signed in and whether they can push", () => {
   const base = { repo: "acme/app", account: null, ghMissing: false, login: "ana", canPush: true };
@@ -48,7 +48,7 @@ test("Firebase: off when the app doesn't use it, and how to sign back in", () =>
 });
 
 test("Sentry: catches unset variables, a misspelled project and a missing sentry-cli", () => {
-  const base = { used: true, env: { token: true, org: "acme", project: "app" }, stored: ["SENTRY_AUTH_TOKEN"], cli: "2.42.2", url: "https://de.sentry.io", probe: { status: 200 } };
+  const base = { used: true, androidUpload: true, env: { token: true, org: "acme", project: "app" }, stored: ["SENTRY_AUTH_TOKEN"], cli: "2.42.2", url: "https://de.sentry.io", probe: { status: 200 } };
   assert.equal(judgeSentry({ ...base, used: false }).health, "off");
   const unset = judgeSentry({ ...base, env: { token: false, org: "acme", project: null } });
   assert.equal(unset.summary, "Builds have no SENTRY_AUTH_TOKEN, SENTRY_PROJECT");
@@ -85,4 +85,22 @@ test("iOS signing: a distribution certificate for the app's team", () => {
   const other = judgeSigning({ used: true, team: "OTHER12345", identities: ids });
   assert.deepEqual([other.health, other.summary], ["error", "No distribution certificate for team OTHER12345"]);
   assert.equal(judgeSigning({ used: true, team: "AAAAAAAAAA", identities: ids }).health, "warn");
+});
+
+test("a broken connection skips only the builds it would fail, and only when the check is sure", () => {
+  const sentry = { used: true, androidUpload: true, env: { token: true, org: "acme", project: "app" }, stored: [], cli: "2.42.2", url: "https://de.sentry.io", probe: { status: 404 } };
+  const release = { platform: "android", mode: "release", artifact: "appbundle" } as const;
+  const typo = judgeSentry(sentry);
+  assert.equal(blockedBy(release, "app-store", [typo])?.id, "sentry");
+  assert.equal(blockedBy({ ...release, mode: "profile" }, "app-store", [typo]), null);
+  assert.equal(blockedBy(release, "app-store", [judgeSentry({ ...sentry, probe: null })]), null, "unreachable might be the network");
+  assert.equal(blockedBy(release, "app-store", [judgeSentry({ ...sentry, androidUpload: false })]), null, "nothing uploads");
+
+  const devOnly = judgeSigning({ used: true, team: "AAAAAAAAAA", identities: ["Apple Development: Ana (AAAAAAAAAA)"] });
+  const ipa = { platform: "ios", mode: "release", artifact: "ipa" } as const;
+  assert.equal(blockedBy(ipa, "ad-hoc", [devOnly])?.id, "signing");
+  assert.equal(blockedBy(ipa, "development", [devOnly]), null);
+  assert.equal(blockedBy({ ...ipa, artifact: "simulator" }, "ad-hoc", [devOnly]), null);
+  const none = judgeSigning({ used: true, team: "AAAAAAAAAA", identities: [] });
+  assert.equal(blockedBy(ipa, "development", [none])?.id, "signing");
 });

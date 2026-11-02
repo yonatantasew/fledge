@@ -9,6 +9,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { buildEnv, envFor } from "./build-env.ts";
+import type { ExportMethod, Mode, Platform } from "./commands.ts";
 import { firebaseStatus, type FirebaseStatus } from "./firebase.ts";
 import type { Project } from "./projects.ts";
 import { slackToken } from "./slack.ts";
@@ -27,6 +28,26 @@ export interface Connection {
   needs?: string[]; // build variables that would fix it, which the UI offers to set
   stored?: string[]; // build variables of this service that fledge keeps for the app
   variables?: string[]; // all the build variables this service reads
+  blocks?: Blocks; // the builds that would fail, set only when the check is sure
+}
+
+/** Builds a broken connection fails: a build matches when it fits every field given. */
+export interface Blocks {
+  platforms?: Platform[];
+  modes?: Mode[];
+  artifacts?: string[];
+  exportMethods?: ExportMethod[]; // IPAs only
+}
+
+/** The first connection that says this build would fail, if any. */
+export function blockedBy(b: { platform: Platform; mode: Mode; artifact: string }, exportMethod: ExportMethod, cards: Connection[]): Connection | null {
+  const fits = <T,>(list: T[] | undefined, v: T) => !list || list.includes(v);
+  return (
+    cards.find(
+      ({ blocks: k }) =>
+        k && fits(k.platforms, b.platform) && fits(k.modes, b.mode) && fits(k.artifacts, b.artifact) && (b.artifact !== "ipa" || fits(k.exportMethods, exportMethod)),
+    ) ?? null
+  );
 }
 
 // ------------------------------------------------------------------- judges
@@ -125,6 +146,7 @@ export function judgeFirebase(f: { used: boolean; status: Pick<FirebaseStatus, "
 
 export function judgeSentry(f: {
   used: boolean;
+  androidUpload: boolean; // the Gradle plugin uploads release builds' mappings
   env: { token: boolean; org: string | null; project: string | null };
   stored: string[]; // which of the three fledge keeps for the app, rather than its own environment
   cli: string | null; // sentry-cli --version, or null when it isn't on PATH
@@ -134,6 +156,8 @@ export function judgeSentry(f: {
   const c = { id: "sentry", name: "Sentry" } as const;
   if (!f.used) return { ...c, health: "off", summary: "Not used by this app", details: [] };
   const stored = f.stored;
+  // Android release builds fail on these; a network hiccup or a 5xx might not.
+  const blocks: Blocks | undefined = f.androidUpload ? { platforms: ["android"], modes: ["release"] } : undefined;
   const unset = [!f.env.token && "SENTRY_AUTH_TOKEN", !f.env.org && "SENTRY_ORG", !f.env.project && "SENTRY_PROJECT"].filter(Boolean) as string[];
   if (unset.length)
     return {
@@ -144,6 +168,7 @@ export function judgeSentry(f: {
       fix: "Set them here; fledge keeps them in this Mac's Keychain and gives them to every build of this app.",
       needs: unset,
       stored,
+      blocks,
     };
   const from = (n: string) => (stored.includes(n) ? "set in fledge" : "from fledge's environment");
   const details = [
@@ -154,7 +179,7 @@ export function judgeSentry(f: {
   const p = f.probe;
   if (!p) return { ...c, health: "error", summary: `Couldn't reach ${f.url}`, details, fix: "Check the network, or SENTRY_URL." };
   if (p.status === 404)
-    return { ...c, health: "error", summary: `There's no project "${f.env.project}" in ${f.env.org}`, details, fix: "Set SENTRY_PROJECT to the project's slug, from its URL in Sentry.", needs: ["SENTRY_PROJECT"], stored };
+    return { ...c, health: "error", summary: `There's no project "${f.env.project}" in ${f.env.org}`, details, fix: "Set SENTRY_PROJECT to the project's slug, from its URL in Sentry.", needs: ["SENTRY_PROJECT"], stored, blocks };
   if (p.status === 401 || p.status === 403)
     return {
       ...c,
@@ -164,9 +189,10 @@ export function judgeSentry(f: {
       fix: "Make an organization auth token in Sentry (Settings → Auth Tokens) and set it as SENTRY_AUTH_TOKEN.",
       needs: ["SENTRY_AUTH_TOKEN"],
       stored,
+      blocks,
     };
   if (p.status !== 200) return { ...c, health: "error", summary: `Sentry answered ${p.status}`, details: [...details, ...(p.detail ? [p.detail] : [])], fix: "Try again in a minute.", stored };
-  if (!f.cli) return { ...c, health: "error", summary: "sentry-cli isn't installed", details, fix: "npm install -g @sentry/cli (the version your build asks for), then restart fledge.", stored };
+  if (!f.cli) return { ...c, health: "error", summary: "sentry-cli isn't installed", details, fix: "npm install -g @sentry/cli (the version your build asks for), then restart fledge.", stored, blocks };
   return { ...c, health: "ok", summary: `${f.env.org}/${f.env.project}`, details: [...details, "The token can read this project"], stored };
 }
 
@@ -185,6 +211,8 @@ export function judgeSigning(f: { used: boolean; team: string | null; identities
       summary: `No distribution certificate for ${team}`,
       details: details.length ? details : [`No signing certificates for ${team}`],
       fix: "Ad hoc and App Store IPAs need one. Sign in to Xcode → Settings → Accounts with an account in the team, and Xcode makes it when you next export.",
+      // Without a development certificate either, no IPA exports.
+      blocks: { platforms: ["ios"], artifacts: ["ipa"], exportMethods: dev.length ? ["app-store", "ad-hoc"] : undefined },
     };
   return { ...c, health: "ok", summary: `Can sign for ${team}`, details };
 }
@@ -312,7 +340,7 @@ async function sentry(p: Project): Promise<Connection> {
       () => null,
     );
   }
-  const card = judgeSentry({ used, env: e, stored, cli, url, probe });
+  const card = judgeSentry({ used, androidUpload: /io\.sentry\.android\.gradle/.test(gradle), env: e, stored, cli, url, probe });
   return used ? { ...card, variables: SENTRY_VARS } : card;
 }
 
