@@ -52,6 +52,7 @@ import {
 import { startupProject } from "./repo.ts";
 import { fingerprint } from "./fingerprint.ts";
 import { inside, listArchive } from "./archive.ts";
+import { checkConnections } from "./connections.ts";
 import { install, installBlocker, listDevices, NeedsReplace, type Device } from "./devices.ts";
 
 const run = promisify(execFile);
@@ -233,6 +234,8 @@ const pubLocks = new Map<string, Promise<unknown>>();
 const pubDone = new Map<string, string>();
 const clients = new Set<http.ServerResponse>();
 let publishing = false;
+// Connection checks per app, for a minute: they call GitHub, Slack and Sentry.
+const connectionChecks = new Map<string, { at: number; result: ReturnType<typeof checkConnections> }>();
 
 function broadcast(event: string, data: unknown) {
   const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -1419,6 +1422,20 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
     }
     const sha = await git(project.root, "rev-parse", "--short=8", "HEAD").catch(() => "{sha}");
     return send(res, 200, { mode, sha, commands: previewCommands(config, mode, sha, flutterFor(config, project.root)) });
+  }
+
+  // Each service the app's builds and releases use, checked for real. Read-only.
+  const connRoute = /^\/api\/projects\/([a-z0-9-]+)\/connections$/.exec(url.pathname);
+  if (connRoute && req.method === "GET") {
+    const project = await getProject(connRoute[1]);
+    if (!project) return send(res, 404, { error: "unknown app" });
+    const fresh = url.searchParams.get("fresh") === "1";
+    const cached = connectionChecks.get(project.id);
+    if (!fresh && cached && Date.now() - cached.at < 60_000) return send(res, 200, await cached.result);
+    const result = checkConnections(project);
+    connectionChecks.set(project.id, { at: Date.now(), result });
+    result.catch(() => connectionChecks.delete(project.id));
+    return send(res, 200, await result);
   }
 
   const projectRoute = /^\/api\/projects\/([a-z0-9-]+)(\/config)?$/.exec(url.pathname);
