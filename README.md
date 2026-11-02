@@ -117,6 +117,15 @@ only read.
 
 Services an app doesn't use are listed as not used.
 
+Planning builds runs the Sentry and signing checks too (each kept for a
+minute). A build they're sure would fail is skipped before it's queued, with
+the reason and a **Fix** button that opens Connections: an Android release
+build while the Sentry Gradle plugin can't upload (variables unset, no such
+project, token rejected, no `sentry-cli`), and an App Store or ad hoc IPA
+without a distribution certificate (any IPA, without a development one
+either). A Sentry that can't be reached skips nothing, since that may be the
+network.
+
 ### Build variables
 
 Tokens and settings a build reads from its environment, such as Sentry's,
