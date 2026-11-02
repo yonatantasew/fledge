@@ -53,6 +53,7 @@ import { startupProject } from "./repo.ts";
 import { fingerprint } from "./fingerprint.ts";
 import { inside, listArchive } from "./archive.ts";
 import { buildEnv, envFor } from "./build-env.ts";
+import { SUGGESTION_KINDS, suggestions, type SuggestionKind } from "./suggestions.ts";
 import { checkConnections } from "./connections.ts";
 import { install, installBlocker, listDevices, NeedsReplace, type Device } from "./devices.ts";
 
@@ -1439,6 +1440,16 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
     connectionChecks.set(project.id, { at: Date.now(), result });
     result.catch(() => connectionChecks.delete(project.id));
     return send(res, 200, await result);
+  }
+
+  // Suggestions for the config form from what this Mac is signed in to (see suggestions.ts).
+  const suggestRoute = /^\/api\/suggestions\/([a-z-]+)$/.exec(url.pathname);
+  if (suggestRoute && req.method === "GET") {
+    const kind = suggestRoute[1] as SuggestionKind;
+    if (!SUGGESTION_KINDS.includes(kind)) return send(res, 404, { error: "unknown kind" });
+    const account = url.searchParams.get("account") ?? undefined;
+    if (account !== undefined && !/^[A-Za-z0-9-]{1,39}$/.test(account)) return send(res, 400, { error: "that isn't a GitHub login" });
+    return send(res, 200, await suggestions(kind, account));
   }
 
   // An app's build variables: names only come back; values go to the Keychain.
