@@ -54,7 +54,7 @@ import { fingerprint } from "./fingerprint.ts";
 import { inside, listArchive } from "./archive.ts";
 import { buildEnv, envFor } from "./build-env.ts";
 import { SUGGESTION_KINDS, suggestions, type SuggestionKind } from "./suggestions.ts";
-import { checkConnection, CONNECTION_IDS, type Connection } from "./connections.ts";
+import { BLOCKING, blockedBy, checkConnection, CONNECTION_IDS, type Connection } from "./connections.ts";
 import { install, installBlocker, listDevices, NeedsReplace, type Device } from "./devices.ts";
 
 const run = promisify(execFile);
@@ -849,6 +849,17 @@ async function plan(body: unknown) {
     if (blocked) skipped.push({ ...t, reason: blocked });
     else if ("build" in r) builds.push(r.build);
     else skipped.push(r.skipped);
+  }
+  // A build the connection checks are sure would fail (no Sentry project, no
+  // distribution certificate) is skipped up front, saying what to fix.
+  if (builds.length) {
+    const cards = await Promise.all(BLOCKING.map((id) => connectionCheck(project, id).result));
+    for (const b of [...builds]) {
+      const c = blockedBy(b, parsed.options.exportMethod, cards);
+      if (!c) continue;
+      builds.splice(builds.indexOf(b), 1);
+      skipped.push({ platform: b.platform, flavor: b.flavor, mode: b.mode, reason: `${c.name}: ${c.summary} — ${c.fix ?? "see Connections"}`, connection: c.id });
+    }
   }
   const pubGetTemplate = (project.config.commands ?? generateCommands(project.config)).pubGet;
   const pubGet = pubGetTemplate ? tokenize(pubGetTemplate).flatMap((t) => (t === "{flutter}" ? flutter : [t])) : null;

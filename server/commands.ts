@@ -56,6 +56,7 @@ export interface PlannedBuild extends Target {
 
 export interface SkippedBuild extends Target {
   reason: string;
+  connection?: string; // the connection check that skipped it, to fix there
 }
 
 const BUILD_NAME = /^\d+\.\d+\.\d+$/;

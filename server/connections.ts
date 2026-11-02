@@ -39,6 +39,9 @@ export interface Blocks {
   exportMethods?: ExportMethod[]; // IPAs only
 }
 
+// The checks that can say a build would fail.
+export const BLOCKING: Connection["id"][] = ["sentry", "signing"];
+
 /** The first connection that says this build would fail, if any. */
 export function blockedBy(b: { platform: Platform; mode: Mode; artifact: string }, exportMethod: ExportMethod, cards: Connection[]): Connection | null {
   const fits = <T,>(list: T[] | undefined, v: T) => !list || list.includes(v);
