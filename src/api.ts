@@ -406,6 +406,9 @@ export interface Connection {
   summary: string;
   details: string[];
   fix?: string;
+  needs?: string[];
+  stored?: string[];
+  variables?: string[];
 }
 
 export const projectsApi = {
@@ -417,6 +420,8 @@ export const projectsApi = {
   config: (id: string) => send<ConfigFile>("GET", `/api/projects/${id}/config`),
   saveConfig: (id: string, config: unknown) => send<{ file: string }>("PUT", `/api/projects/${id}/config`, { config }),
   writeCommands: (id: string, config: unknown) => post<{ config: Record<string, unknown> }>(`/api/projects/${id}/commands`, { config }),
+  envNames: (id: string) => send<{ names: string[] }>("GET", `/api/projects/${id}/env`),
+  setEnv: (id: string, name: string, value: string | null) => send<{ names: string[] }>("PUT", `/api/projects/${id}/env`, { name, value }),
   connections: (id: string, fresh = false) =>
     send<{ checkedAt: number; connections: Connection[] }>("GET", `/api/projects/${id}/connections${fresh ? "?fresh=1" : ""}`),
   previewCommands: (id: string, config: unknown, mode: BuildMode) =>

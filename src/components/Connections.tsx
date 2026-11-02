@@ -19,6 +19,7 @@ import { projectsApi, type Connection } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { BuildVariables, VariableRows } from "./BuildVariables";
 import { cn } from "@/lib/utils";
 
 const ICON: Record<Connection["id"], typeof GithubIcon> = {
@@ -66,6 +67,15 @@ function useConnections(appId: string) {
 export function ConnectionsButton({ appId, appName }: { appId: string; appName: string }) {
   const [open, setOpen] = useState(false);
   const { data, checking, error, check } = useConnections(appId);
+  const [names, setNames] = useState<string[]>([]);
+  useEffect(() => {
+    if (open) void projectsApi.envNames(appId).then((r) => setNames(r.names), () => {});
+  }, [open, appId]);
+  // A variable changed: the checks that read it are stale.
+  const changed = (n: string[]) => {
+    setNames(n);
+    check(true);
+  };
   const problems = data?.connections.filter((c) => c.health === "error" || c.health === "warn") ?? [];
   const worst = problems.some((c) => c.health === "error") ? "error" : problems.length ? "warn" : data ? "ok" : null;
   return (
@@ -88,7 +98,7 @@ export function ConnectionsButton({ appId, appName }: { appId: string; appName: 
           <DialogHeader>
             <DialogTitle>Connections</DialogTitle>
             <DialogDescription>
-              What {appName}'s builds and releases sign in to, checked for real from this Mac. Nothing here changes anything.
+              What {appName}'s builds and releases sign in to, checked for real from this Mac. The checks only read; values you set are kept in this Mac's Keychain.
             </DialogDescription>
           </DialogHeader>
           <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
@@ -103,8 +113,9 @@ export function ConnectionsButton({ appId, appName }: { appId: string; appName: 
             {[...(data?.connections ?? [])]
               .sort((a, b) => RANK[a.health] - RANK[b.health])
               .map((c) => (
-                <ConnectionCard key={c.id} c={c} />
+                <ConnectionCard key={c.id} c={c} appId={appId} onVariables={changed} />
               ))}
+            <BuildVariables appId={appId} names={names} onChange={changed} shownAbove={(data?.connections ?? []).flatMap((c) => c.variables ?? [])} />
           </div>
         </DialogContent>
       </Dialog>
@@ -112,8 +123,11 @@ export function ConnectionsButton({ appId, appName }: { appId: string; appName: 
   );
 }
 
-function ConnectionCard({ c }: { c: Connection }) {
+function ConnectionCard({ c, appId, onVariables }: { c: Connection; appId: string; onVariables: (names: string[]) => void }) {
   const h = HEALTH[c.health];
+  const vars = [...new Set([...(c.needs ?? []), ...(c.variables ?? []), ...(c.stored ?? [])])];
+  const [editing, setEditing] = useState(false);
+  const showVars = vars.length > 0 && (!!c.needs?.length || editing);
   return (
     <div className={cn("rounded-lg border p-3", c.health === "off" && "opacity-70", c.health === "error" && "border-destructive/40", c.health === "warn" && "border-warning/40")}>
       <div className="flex items-start gap-3">
@@ -140,6 +154,16 @@ function ConnectionCard({ c }: { c: Connection }) {
             <p className={cn("rounded-md px-2 py-1.5 text-xs", c.health === "off" ? "bg-muted/60 text-muted-foreground" : "bg-muted text-foreground")}>
               {c.health === "off" ? c.fix : `To fix: ${c.fix}`}
             </p>
+          )}
+          {showVars && (
+            <div className="pt-1">
+              <VariableRows appId={appId} names={vars} stored={c.stored ?? []} onChange={onVariables} />
+            </div>
+          )}
+          {vars.length > 0 && !c.needs?.length && (
+            <button type="button" className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground" onClick={() => setEditing((e) => !e)}>
+              {editing ? "Hide its variables" : "Change its variables"}
+            </button>
           )}
         </div>
       </div>
