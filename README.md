@@ -93,6 +93,24 @@ over the team's shared one without changing the repository. The list of apps
 is in `~/.config/fledge/projects.json`. Set `FLEDGE_HOME` to keep both
 somewhere else.
 
+## Connections
+
+The plug button in the header checks every service the current app's builds
+and releases use, for real, from this Mac, and says how to fix what isn't
+working. A dot on the button means something needs attention. The checks
+only read; nothing is changed.
+
+| Service | Checked |
+| --- | --- |
+| GitHub | `gh` answers for `release.github.account` (or its active account), and that account can push to `release.github.repo`. |
+| Jira | `acli` is signed in to `release.jira.site`. |
+| Slack | The bot token works, has the permissions fledge uses, and is in every channel the app posts to. |
+| Firebase | The `firebase` CLI's sign-in still works. |
+| Sentry | When the app uses Sentry: `SENTRY_AUTH_TOKEN`, `SENTRY_ORG` and `SENTRY_PROJECT` are in fledge's environment (builds get that environment, fixed when fledge starts), the token can read that project on its region, and `sentry-cli` is on the PATH. |
+| iOS signing | A distribution certificate is installed for the Xcode project's team. Ad hoc and App Store IPAs need one. |
+
+Services an app doesn't use are listed as not used.
+
 ## Config format
 
 Start from [fledge.example.json](fledge.example.json). The fields:
