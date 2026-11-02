@@ -118,13 +118,18 @@ only read.
 Services an app doesn't use are listed as not used.
 
 Planning builds runs the Sentry and signing checks too (each kept for a
-minute). A build they're sure would fail is skipped before it's queued, with
-the reason and a **Fix** button that opens Connections: an Android release
-build while the Sentry Gradle plugin can't upload (variables unset, no such
-project, token rejected, no `sentry-cli`), and an App Store or ad hoc IPA
-without a distribution certificate (any IPA, without a development one
-either). A Sentry that can't be reached skips nothing, since that may be the
-network.
+minute). Only a build they're sure would fail is skipped before it's queued,
+with the reason and a **Fix** button that opens Connections: an Android
+release build while the Sentry Gradle plugin can't upload (variables unset,
+no such project, or the token rejected). When the Gradle file reads
+`SENTRY_SKIP_UPLOAD` and a build gets it as `1`, the upload is off on
+purpose and nothing is skipped.
+
+A build that might fail is built anyway, with a warning on the plan: an App
+Store or ad hoc IPA without a distribution certificate on this Mac (Xcode can
+sign with one Apple keeps in the cloud), and an Android release without
+`sentry-cli` (the Gradle plugin brings its own). A Sentry that can't be
+reached skips nothing either, since that may be the network.
 
 ### Build variables
 
