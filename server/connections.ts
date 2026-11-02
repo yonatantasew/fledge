@@ -150,6 +150,7 @@ export function judgeFirebase(f: { used: boolean; status: Pick<FirebaseStatus, "
 export function judgeSentry(f: {
   used: boolean;
   androidUpload: boolean; // the Gradle plugin uploads release builds' mappings
+  skipUpload?: boolean; // SENTRY_SKIP_UPLOAD=1, and the Gradle file reads it
   env: { token: boolean; org: string | null; project: string | null };
   stored: string[]; // which of the three fledge keeps for the app, rather than its own environment
   cli: string | null; // sentry-cli --version, or null when it isn't on PATH
@@ -160,14 +161,15 @@ export function judgeSentry(f: {
   if (!f.used) return { ...c, health: "off", summary: "Not used by this app", details: [] };
   const stored = f.stored;
   // Android release builds fail on these; a network hiccup or a 5xx might not.
-  const blocks: Blocks | undefined = f.androidUpload ? { platforms: ["android"], modes: ["release"] } : undefined;
+  const blocks: Blocks | undefined = f.androidUpload && !f.skipUpload ? { platforms: ["android"], modes: ["release"] } : undefined;
+  const skipping = f.skipUpload ? ["SENTRY_SKIP_UPLOAD=1 turns the upload off, so builds go ahead regardless"] : [];
   const unset = [!f.env.token && "SENTRY_AUTH_TOKEN", !f.env.org && "SENTRY_ORG", !f.env.project && "SENTRY_PROJECT"].filter(Boolean) as string[];
   if (unset.length)
     return {
       ...c,
       health: "error",
       summary: `Builds have no ${unset.join(", ")}`,
-      details: ["Release builds upload their symbols with these."],
+      details: ["Release builds upload their symbols with these.", ...skipping],
       fix: "Set them here; fledge keeps them in this Mac's Keychain and gives them to every build of this app.",
       needs: unset,
       stored,
@@ -178,6 +180,7 @@ export function judgeSentry(f: {
     `${f.env.org}/${f.env.project} on ${f.url}`,
     `Token ${from("SENTRY_AUTH_TOKEN")}; org ${from("SENTRY_ORG")}; project ${from("SENTRY_PROJECT")}`,
     f.cli ? `sentry-cli ${f.cli}` : "sentry-cli isn't on fledge's PATH",
+    ...skipping,
   ];
   const p = f.probe;
   if (!p) return { ...c, health: "error", summary: `Couldn't reach ${f.url}`, details, fix: "Check the network, or SENTRY_URL." };
@@ -343,7 +346,9 @@ async function sentry(p: Project): Promise<Connection> {
       () => null,
     );
   }
-  const card = judgeSentry({ used, androidUpload: /io\.sentry\.android\.gradle/.test(gradle), env: e, stored, cli, url, probe });
+  // A common switch for skipping the upload, honoured when the Gradle file reads it.
+  const skipUpload = /SENTRY_SKIP_UPLOAD/.test(gradle) && env.SENTRY_SKIP_UPLOAD === "1";
+  const card = judgeSentry({ used, androidUpload: /io\.sentry\.android\.gradle/.test(gradle), skipUpload, env: e, stored, cli, url, probe });
   return used ? { ...card, variables: SENTRY_VARS } : card;
 }
 

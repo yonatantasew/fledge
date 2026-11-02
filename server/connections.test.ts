@@ -95,6 +95,9 @@ test("a broken connection skips only the builds it would fail, and only when the
   assert.equal(blockedBy({ ...release, mode: "profile" }, "app-store", [typo]), null);
   assert.equal(blockedBy(release, "app-store", [judgeSentry({ ...sentry, probe: null })]), null, "unreachable might be the network");
   assert.equal(blockedBy(release, "app-store", [judgeSentry({ ...sentry, androidUpload: false })]), null, "nothing uploads");
+  const skipping = judgeSentry({ ...sentry, skipUpload: true });
+  assert.equal(blockedBy(release, "app-store", [skipping]), null, "the app's own switch turns the upload off");
+  assert.match(skipping.details.join("\n"), /SENTRY_SKIP_UPLOAD=1/);
 
   const devOnly = judgeSigning({ used: true, team: "AAAAAAAAAA", identities: ["Apple Development: Ana (AAAAAAAAAA)"] });
   const ipa = { platform: "ios", mode: "release", artifact: "ipa" } as const;
