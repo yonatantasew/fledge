@@ -411,6 +411,18 @@ export interface Connection {
   variables?: string[];
 }
 
+/** A value the config form can offer for a field, from what this Mac is signed in to (server/suggestions.ts). */
+export interface Suggestion {
+  value: string;
+  label?: string;
+}
+export type SuggestionKind = "github-accounts" | "github-repos" | "jira-site" | "jira-projects" | "slack-channels";
+
+export const suggestionsApi = {
+  get: (kind: SuggestionKind, account?: string) =>
+    send<Suggestion[]>("GET", `/api/suggestions/${kind}${account ? `?account=${encodeURIComponent(account)}` : ""}`),
+};
+
 export const projectsApi = {
   list: () => send<ProjectSummary[]>("GET", "/api/projects"),
   candidates: () => send<string[]>("GET", "/api/projects/candidates"),

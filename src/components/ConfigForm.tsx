@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { EnvCommands, type CommandsPreview } from "./EnvCommands";
+import { SuggestInput } from "./SuggestInput";
 
 type Path = (string | number)[];
 type Edit = (path: Path, value: unknown) => void;
@@ -82,29 +83,29 @@ export function ConfigForm({ value, onChange, commands }: { value: Obj; onChange
 
       <Section title="Slack" hint="Where Ship sends a finished build. The bot token is set per Mac, not here.">
         <Field label="Channel" hint="#channel-name or a channel ID">
-          <Input value={text(getIn(value, ["ship", "slack", "channel"]))} onChange={(e) => edit(["ship", "slack", "channel"], e.target.value.trim())} placeholder="#builds" className="font-mono" />
+          <SuggestInput kind="slack-channels" value={text(getIn(value, ["ship", "slack", "channel"]))} onChange={(e) => edit(["ship", "slack", "channel"], e.target.value.trim())} placeholder="#builds" className="font-mono" />
         </Field>
       </Section>
 
       <Section title="Releases" hint="Where releases and version bumps go, and which Jira tickets move when a release is published. Leave empty to not use releases.">
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="GitHub repository">
-            <Input value={text(getIn(value, ["release", "github", "repo"]))} onChange={(e) => edit(["release", "github", "repo"], e.target.value.trim())} placeholder="owner/repo" className="font-mono" />
+            <SuggestInput kind="github-repos" account={text(getIn(value, ["release", "github", "account"])) || undefined} value={text(getIn(value, ["release", "github", "repo"]))} onChange={(e) => edit(["release", "github", "repo"], e.target.value.trim())} placeholder="owner/repo" className="font-mono" />
           </Field>
           <Field label="Base branch">
             <Input value={text(getIn(value, ["release", "github", "baseBranch"]))} onChange={(e) => edit(["release", "github", "baseBranch"], e.target.value.trim())} placeholder="main" className="font-mono" />
           </Field>
           <Field label="GitHub account" hint="optional">
-            <Input value={text(getIn(value, ["release", "github", "account"]))} onChange={(e) => edit(["release", "github", "account"], e.target.value.trim())} placeholder="active gh account" className="font-mono" />
+            <SuggestInput kind="github-accounts" value={text(getIn(value, ["release", "github", "account"]))} onChange={(e) => edit(["release", "github", "account"], e.target.value.trim())} placeholder="active gh account" className="font-mono" />
           </Field>
           <Field label="Notes heading">
             <Input value={text(getIn(value, ["release", "channel"]))} onChange={(e) => edit(["release", "channel"], e.target.value)} placeholder="Release" />
           </Field>
           <Field label="Ticket project key" hint="Ticket keys in PR titles, like PROJ-123">
-            <Input value={text(getIn(value, ["release", "tickets", "project"]))} onChange={(e) => edit(["release", "tickets", "project"], e.target.value.trim().toUpperCase())} placeholder="PROJ" className="font-mono" />
+            <SuggestInput kind="jira-projects" value={text(getIn(value, ["release", "tickets", "project"]))} onChange={(e) => edit(["release", "tickets", "project"], e.target.value.trim().toUpperCase())} placeholder="PROJ" className="font-mono" />
           </Field>
           <Field label="Jira site">
-            <Input value={text(getIn(value, ["release", "jira", "site"]))} onChange={(e) => edit(["release", "jira", "site"], e.target.value.trim())} placeholder="https://your-team.atlassian.net" className="font-mono" />
+            <SuggestInput kind="jira-site" value={text(getIn(value, ["release", "jira", "site"]))} onChange={(e) => edit(["release", "jira", "site"], e.target.value.trim())} placeholder="https://your-team.atlassian.net" className="font-mono" />
           </Field>
           <Field label="Move tickets from status">
             <Input value={text(getIn(value, ["release", "jira", "fromStatus"]))} onChange={(e) => edit(["release", "jira", "fromStatus"], e.target.value)} placeholder="Ready for test" />
