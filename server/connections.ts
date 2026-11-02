@@ -8,6 +8,7 @@ import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { buildEnv, envFor } from "./build-env.ts";
 import { firebaseStatus, type FirebaseStatus } from "./firebase.ts";
 import type { Project } from "./projects.ts";
 import { slackToken } from "./slack.ts";
@@ -23,6 +24,9 @@ export interface Connection {
   summary: string; // one line: who fledge is signed in as, or what's wrong
   details: string[]; // what was checked, one fact per line
   fix?: string; // what to do about it, when something's wrong
+  needs?: string[]; // build variables that would fix it, which the UI offers to set
+  stored?: string[]; // build variables of this service that fledge keeps for the app
+  variables?: string[]; // all the build variables this service reads
 }
 
 // ------------------------------------------------------------------- judges
@@ -122,31 +126,48 @@ export function judgeFirebase(f: { used: boolean; status: Pick<FirebaseStatus, "
 export function judgeSentry(f: {
   used: boolean;
   env: { token: boolean; org: string | null; project: string | null };
+  stored: string[]; // which of the three fledge keeps for the app, rather than its own environment
   cli: string | null; // sentry-cli --version, or null when it isn't on PATH
   url: string;
   probe: { status: number; detail?: string } | null; // GET projects/<org>/<project>/releases/
 }): Connection {
   const c = { id: "sentry", name: "Sentry" } as const;
   if (!f.used) return { ...c, health: "off", summary: "Not used by this app", details: [] };
+  const stored = f.stored;
   const unset = [!f.env.token && "SENTRY_AUTH_TOKEN", !f.env.org && "SENTRY_ORG", !f.env.project && "SENTRY_PROJECT"].filter(Boolean) as string[];
   if (unset.length)
     return {
       ...c,
       health: "error",
-      summary: `fledge's builds have no ${unset.join(", ")}`,
-      details: ["Builds get fledge's environment, which is fixed when fledge starts."],
-      fix: "Export them in your shell profile, then restart fledge from a new terminal so it picks them up.",
+      summary: `Builds have no ${unset.join(", ")}`,
+      details: ["Release builds upload their symbols with these."],
+      fix: "Set them here; fledge keeps them in this Mac's Keychain and gives them to every build of this app.",
+      needs: unset,
+      stored,
     };
-  const details = [`${f.env.org}/${f.env.project} on ${f.url}`, f.cli ? `sentry-cli ${f.cli}` : "sentry-cli isn't on fledge's PATH"];
+  const from = (n: string) => (stored.includes(n) ? "set in fledge" : "from fledge's environment");
+  const details = [
+    `${f.env.org}/${f.env.project} on ${f.url}`,
+    `Token ${from("SENTRY_AUTH_TOKEN")}; org ${from("SENTRY_ORG")}; project ${from("SENTRY_PROJECT")}`,
+    f.cli ? `sentry-cli ${f.cli}` : "sentry-cli isn't on fledge's PATH",
+  ];
   const p = f.probe;
   if (!p) return { ...c, health: "error", summary: `Couldn't reach ${f.url}`, details, fix: "Check the network, or SENTRY_URL." };
   if (p.status === 404)
-    return { ...c, health: "error", summary: `There's no project "${f.env.project}" in ${f.env.org}`, details, fix: "Check SENTRY_PROJECT (the project's slug, from its URL in Sentry), then restart fledge." };
+    return { ...c, health: "error", summary: `There's no project "${f.env.project}" in ${f.env.org}`, details, fix: "Set SENTRY_PROJECT to the project's slug, from its URL in Sentry.", needs: ["SENTRY_PROJECT"], stored };
   if (p.status === 401 || p.status === 403)
-    return { ...c, health: "error", summary: "Sentry rejected the token for this project", details: [...details, ...(p.detail ? [p.detail] : [])], fix: "Make an organization auth token in Sentry (Settings → Auth Tokens) for this org and region, then restart fledge." };
-  if (p.status !== 200) return { ...c, health: "error", summary: `Sentry answered ${p.status}`, details: [...details, ...(p.detail ? [p.detail] : [])], fix: "Try again in a minute." };
-  if (!f.cli) return { ...c, health: "error", summary: "sentry-cli isn't installed", details, fix: "npm install -g @sentry/cli (the version your build asks for), then restart fledge." };
-  return { ...c, health: "ok", summary: `${f.env.org}/${f.env.project}`, details: [...details, "The token can read this project"] };
+    return {
+      ...c,
+      health: "error",
+      summary: "Sentry rejected the token for this project",
+      details: [...details, ...(p.detail ? [p.detail] : [])],
+      fix: "Make an organization auth token in Sentry (Settings → Auth Tokens) and set it as SENTRY_AUTH_TOKEN.",
+      needs: ["SENTRY_AUTH_TOKEN"],
+      stored,
+    };
+  if (p.status !== 200) return { ...c, health: "error", summary: `Sentry answered ${p.status}`, details: [...details, ...(p.detail ? [p.detail] : [])], fix: "Try again in a minute.", stored };
+  if (!f.cli) return { ...c, health: "error", summary: "sentry-cli isn't installed", details, fix: "npm install -g @sentry/cli (the version your build asks for), then restart fledge.", stored };
+  return { ...c, health: "ok", summary: `${f.env.org}/${f.env.project}`, details: [...details, "The token can read this project"], stored };
 }
 
 export function judgeSigning(f: { used: boolean; team: string | null; identities: string[] }): Connection {
@@ -266,7 +287,12 @@ async function firebase(p: Project): Promise<Connection> {
   return judgeFirebase({ used, status: await firebaseStatus() });
 }
 
-async function sentry(p: Project, env = process.env): Promise<Connection> {
+const SENTRY_VARS = ["SENTRY_AUTH_TOKEN", "SENTRY_ORG", "SENTRY_PROJECT"];
+
+async function sentry(p: Project): Promise<Connection> {
+  // What a build of this app gets: fledge's environment plus the app's build variables.
+  const env = await envFor(p.id);
+  const stored = (await buildEnv.names(p.id)).filter((n) => SENTRY_VARS.includes(n));
   const pubspec = (await exists(path.join(p.root, "pubspec.yaml"))) ?? "";
   const gradle = ((await exists(path.join(p.root, "android/app/build.gradle"))) ?? "") + ((await exists(path.join(p.root, "android/app/build.gradle.kts"))) ?? "");
   const used = /^\s+sentry_flutter:/m.test(pubspec) || /io\.sentry\.android\.gradle/.test(gradle);
@@ -286,7 +312,8 @@ async function sentry(p: Project, env = process.env): Promise<Connection> {
       () => null,
     );
   }
-  return judgeSentry({ used, env: e, cli, url, probe });
+  const card = judgeSentry({ used, env: e, stored, cli, url, probe });
+  return used ? { ...card, variables: SENTRY_VARS } : card;
 }
 
 /** DEVELOPMENT_TEAM from the Xcode project; the first one set wins (flavors share a team). */

@@ -48,17 +48,20 @@ test("Firebase: off when the app doesn't use it, and how to sign back in", () =>
 });
 
 test("Sentry: catches unset variables, a misspelled project and a missing sentry-cli", () => {
-  const base = { used: true, env: { token: true, org: "acme", project: "app" }, cli: "2.42.2", url: "https://de.sentry.io", probe: { status: 200 } };
+  const base = { used: true, env: { token: true, org: "acme", project: "app" }, stored: ["SENTRY_AUTH_TOKEN"], cli: "2.42.2", url: "https://de.sentry.io", probe: { status: 200 } };
   assert.equal(judgeSentry({ ...base, used: false }).health, "off");
   const unset = judgeSentry({ ...base, env: { token: false, org: "acme", project: null } });
-  assert.equal(unset.summary, "fledge's builds have no SENTRY_AUTH_TOKEN, SENTRY_PROJECT");
-  assert.match(unset.fix!, /restart fledge/);
-  assert.equal(judgeSentry({ ...base, probe: { status: 404, detail: "Project does not exist" } }).summary, 'There\'s no project "app" in acme');
+  assert.equal(unset.summary, "Builds have no SENTRY_AUTH_TOKEN, SENTRY_PROJECT");
+  assert.deepEqual(unset.needs, ["SENTRY_AUTH_TOKEN", "SENTRY_PROJECT"]);
+  const typo = judgeSentry({ ...base, probe: { status: 404, detail: "Project does not exist" } });
+  assert.deepEqual([typo.summary, typo.needs], ['There\'s no project "app" in acme', ["SENTRY_PROJECT"]]);
+  assert.deepEqual(judgeSentry({ ...base, probe: { status: 403 } }).needs, ["SENTRY_AUTH_TOKEN"]);
   assert.equal(judgeSentry({ ...base, probe: { status: 403 } }).summary, "Sentry rejected the token for this project");
   assert.equal(judgeSentry({ ...base, probe: null }).summary, "Couldn't reach https://de.sentry.io");
   assert.equal(judgeSentry({ ...base, cli: null }).summary, "sentry-cli isn't installed");
   const ok = judgeSentry(base);
   assert.deepEqual([ok.health, ok.summary], ["ok", "acme/app"]);
+  assert.ok(ok.details.includes("Token set in fledge; org from fledge's environment; project from fledge's environment"));
 });
 
 test("Sentry's URL: SENTRY_URL, else the region inside an org token", () => {
