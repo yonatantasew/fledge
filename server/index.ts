@@ -52,6 +52,7 @@ import {
 import { startupProject } from "./repo.ts";
 import { fingerprint } from "./fingerprint.ts";
 import { inside, listArchive } from "./archive.ts";
+import { buildEnv, envFor } from "./build-env.ts";
 import { checkConnections } from "./connections.ts";
 import { install, installBlocker, listDevices, NeedsReplace, type Device } from "./devices.ts";
 
@@ -277,7 +278,9 @@ async function step(slot: { job: Job; child: ChildProcess | null }, argv: string
   const [cmd, ...args] = argv;
   await log(job, `$ ${[cmd, ...args].join(" ")}\n`);
   // detached: its own process group, so Cancel can stop xcodebuild/gradle too.
-  const child = spawn(cmd, args, { cwd: job.checkout, detached: true });
+  // The app's build variables (Keychain) on top of fledge's environment, read per step so edits apply at once.
+  const env = await envFor(job.project).catch(() => process.env);
+  const child = spawn(cmd, args, { cwd: job.checkout, detached: true, env });
   slot.child = child;
   child.stdout.setEncoding("utf8").on("data", (c: string) => void log(job, c));
   child.stderr.setEncoding("utf8").on("data", (c: string) => void log(job, c));
@@ -1436,6 +1439,25 @@ async function api(req: http.IncomingMessage, res: http.ServerResponse, url: URL
     connectionChecks.set(project.id, { at: Date.now(), result });
     result.catch(() => connectionChecks.delete(project.id));
     return send(res, 200, await result);
+  }
+
+  // An app's build variables: names only come back; values go to the Keychain.
+  const envRoute = /^\/api\/projects\/([a-z0-9-]+)\/env$/.exec(url.pathname);
+  if (envRoute) {
+    const project = await getProject(envRoute[1]);
+    if (!project) return send(res, 404, { error: "unknown app" });
+    if (req.method === "GET") return send(res, 200, { names: await buildEnv.names(project.id) });
+    if (req.method === "PUT") {
+      const b = (await readJson(req)) as { name?: unknown; value?: unknown };
+      if (typeof b.name !== "string" || (b.value !== null && typeof b.value !== "string")) return send(res, 400, { error: "name and value are required" });
+      try {
+        const names = await buildEnv.set(project.id, b.name, b.value);
+        connectionChecks.delete(project.id);
+        return send(res, 200, { names });
+      } catch (e) {
+        return send(res, 400, { error: (e as Error).message });
+      }
+    }
   }
 
   const projectRoute = /^\/api\/projects\/([a-z0-9-]+)(\/config)?$/.exec(url.pathname);
