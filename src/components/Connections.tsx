@@ -64,8 +64,13 @@ function useConnections(appId: string) {
 }
 
 /** Header button: a plug with a dot for the worst connection, opening the checks. */
-export function ConnectionsButton({ appId, appName }: { appId: string; appName: string }) {
+export function ConnectionsButton({ appId, appName, openNow, onOpened }: { appId: string; appName: string; openNow?: boolean; onOpened?: () => void }) {
   const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!openNow) return;
+    setOpen(true);
+    onOpened?.();
+  }, [openNow]);
   const { data, checking, error, check } = useConnections(appId);
   const [names, setNames] = useState<string[]>([]);
   useEffect(() => {

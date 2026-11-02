@@ -74,6 +74,7 @@ export function App() {
   const [infoError, setInfoError] = useState<string | null>(null);
   const [checkoutPath, setCheckoutPath] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [checkNew, setCheckNew] = useState<string | null>(null); // an app just added, whose connections to show
   const [assistant, setAssistant] = useState(() => stored("fledge:assistant") === "open");
   useEffect(() => store("fledge:assistant", assistant ? "open" : "closed"), [assistant]);
   const [editing, setEditing] = useState(false);
@@ -254,7 +255,9 @@ export function App() {
                   )}
                 </>
               )}
-              {current?.ready && <ConnectionsButton key={current.id} appId={current.id} appName={current.name} />}
+              {current?.ready && (
+                <ConnectionsButton key={current.id} appId={current.id} appName={current.name} openNow={checkNew === current.id} onOpened={() => setCheckNew(null)} />
+              )}
               <FirebaseLogin />
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -373,6 +376,7 @@ export function App() {
           onOpenChange={setAdding}
           onAdded={(id) => {
             setProjectId(id);
+            setCheckNew(id); // a new app's first stop: what it can reach
             void refreshProjects();
           }}
         />
