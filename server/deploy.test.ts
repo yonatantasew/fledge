@@ -12,6 +12,7 @@ function setup(mode: PostMode = "together", onFailure: OnFailure = "hold") {
   ]);
   const log: string[] = []; // every Slack call, in order
   const progress: string[] = [];
+  const uploading: (NonNullable<Deployment["upload"]> & { staged?: number })[] = []; // each upload's progress, with how many were staged then
   let clock = 1_000_000;
   let uploads = 0;
   let messages = 0;
@@ -38,7 +39,10 @@ function setup(mode: PostMode = "together", onFailure: OnFailure = "hold") {
         return ts;
       },
       cancelBuild: (id) => log.push(`cancel ${id}`),
-      changed: (list) => list[0]?.progress && progress.push(list[0].progress),
+      changed: (list) => {
+        if (list[0]?.progress) progress.push(list[0].progress);
+        if (list[0]?.upload) uploading.push({ ...list[0].upload, staged: Object.keys(list[0].staged ?? {}).length });
+      },
       now: () => clock,
     },
     [],
@@ -53,7 +57,7 @@ function setup(mode: PostMode = "together", onFailure: OnFailure = "hold") {
     deployer.tick();
     for (let n = 0; n < 20; n++) await new Promise((r) => setTimeout(r, 0)); // let the Slack steps run
   };
-  return { deployer, d, set, log, progress, later: (ms: number) => (clock += ms), failShares: (n: number) => (shareFailures = n) };
+  return { deployer, d, set, log, progress, uploading, later: (ms: number) => (clock += ms), failShares: (n: number) => (shareFailures = n) };
 }
 
 test("together: each file goes up as its build finishes, then all are shared once, with the notes", async () => {
@@ -71,6 +75,26 @@ test("together: each file goes up as its build finishes, then all are shared onc
   assert.equal(d.status, "posted");
   assert.equal(d.staged, undefined);
   assert.equal(deployer.lastPosted("demo", d.key), "full-sha-1");
+});
+
+test("an upload's progress names its build, bytes and start, and is gone once the file is up", async () => {
+  const { deployer, d, set, uploading } = setup();
+  deployer.add(d);
+  await set("a", { status: "succeeded", file: apk });
+  assert.deepEqual(uploading, [{ build: "a", name: apk.name, sent: apk.size / 2, total: apk.size, startedAt: 1_000_000, staged: 0 }]);
+  assert.equal(d.upload, undefined);
+  assert.equal(d.progress, undefined);
+  assert.deepEqual(Object.keys(d.staged!), ["a"]);
+});
+
+test("together: a refused share starts what's staged again, so it counts the files sent again", async () => {
+  const { deployer, d, set, uploading, failShares } = setup();
+  failShares(1);
+  deployer.add(d);
+  await set("a", { status: "succeeded", file: apk });
+  await set("i", { status: "succeeded", file: ipa });
+  assert.equal(d.status, "posted");
+  assert.deepEqual(uploading.map((u) => `${u.build} ${u.staged}`), ["a 0", "i 1", "a 0", "i 1"]);
 });
 
 test("together: an upload staged long before the share is shared as it is", async () => {

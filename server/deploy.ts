@@ -30,6 +30,7 @@ export interface Deployment {
   status: DeployStatus;
   error?: string;
   progress?: string; // while uploading: "uploading a.apk, 340 / 600 MB"
+  upload?: { build: string; name: string; sent: number; total: number; startedAt: number }; // the same, for a progress bar
   staged?: Record<string, { id: string; name: string; at: number }>; // together: uploaded, not yet shared, by build
   thread?: string; // as-built: the notes message, whose thread the later builds reply in
   handled?: string[]; // as-built: builds already posted or reported
@@ -159,25 +160,33 @@ export class Deployer {
       })
       .finally(() => {
         delete d.progress;
+        delete d.upload;
         this.busy.delete(d.id);
         this.deps.changed(this.list);
         this.tick();
       });
   }
 
-  private progress(d: Deployment) {
+  /** Uploads one build's file, keeping the deployment's progress up to date; returns the upload id. */
+  private async upload(d: Deployment, id: string, file: NonNullable<DeployBuild["file"]>) {
     let shown = 0;
-    return (name: string) => (sent: number, total: number) => {
-      d.progress = `uploading ${name}, ${mb(sent)} / ${mb(total)}`;
+    const upload = { build: id, name: file.name, sent: 0, total: file.size, startedAt: this.now() };
+    d.upload = upload;
+    const uploadId = await this.deps.upload(file, (sent, total) => {
+      Object.assign(upload, { sent, total });
+      d.progress = `uploading ${file.name}, ${mb(sent)} / ${mb(total)}`;
       // About once a second: every chunk would rewrite the history file thousands of times.
       if (this.now() - shown > 1000 || sent === total) ((shown = this.now()), this.deps.changed(this.list));
-    };
+    });
+    delete d.progress;
+    delete d.upload;
+    return uploadId;
   }
 
   /** together: one build's file goes up as soon as it's built, not shared yet. */
   private async stage(d: Deployment, id: string, b: DeployBuild) {
     const file = b.file!;
-    const uploadId = await this.deps.upload(file, this.progress(d)(file.name));
+    const uploadId = await this.upload(d, id, file);
     (d.staged ??= {})[id] = { id: uploadId, name: file.name, at: this.now() };
   }
 
@@ -207,7 +216,8 @@ export class Deployer {
     try {
       await this.deps.share(d.channel, files(), text);
     } catch {
-      // Uploads Slack let go of: send them all again, once.
+      // Uploads Slack let go of: send them all again, once. Dropped first, so what's staged is what's been sent again.
+      delete d.staged;
       for (const { id, b } of ok) await this.stage(d, id, b!);
       await this.deps.share(d.channel, files(), text);
     }
@@ -223,7 +233,7 @@ export class Deployer {
     if (built(b)) {
       const first = !d.thread;
       if (first) d.thread = await this.deps.message(d.channel, `${d.notes.trim()}\n\nFiles follow as each build finishes; later ones in this thread.`);
-      const uploadId = await this.deps.upload(b.file, this.progress(d)(b.file.name));
+      const uploadId = await this.upload(d, id, b.file);
       await this.deps.share(d.channel, [{ id: uploadId, title: b.file.name }], first ? "" : `${b.name} is ready (${mb(b.file.size)})`, first ? undefined : d.thread);
     } else {
       await this.deps.message(d.channel, `${b.name} ${b.status}${b.error ? `: ${b.error}` : ""}`, d.thread);
@@ -256,6 +266,7 @@ export class Deployer {
         })
         .finally(() => {
           delete d.progress;
+        delete d.upload;
           this.busy.delete(d.id);
           this.deps.changed(this.list);
         });
