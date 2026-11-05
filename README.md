@@ -477,8 +477,9 @@ carries on, **Post what built** sends the rest with a "Not built" line, or
 **Cancel** stops it. If Slack refuses the post, it's marked failed with the
 reason and can be posted again. Files stream from disk, so a 600 MB APK
 never sits in memory, and one message holds at most 10 files. Slack keeps an
-uploaded but unshared file for a while (at least 15 minutes in a test);
-older ones are uploaded again before they're shared.
+uploaded but unshared file for a while (at least 34 minutes), so files are
+shared however long ago they went up; only if Slack refuses the post are
+they all uploaded again, once.
 
 Routes go in the app's config:
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Deployer, deployKey, STAGED_FOR, type DeployBuild, type Deployment, type OnFailure, type PostMode } from "./deploy.ts";
+import { Deployer, deployKey, type DeployBuild, type Deployment, type OnFailure, type PostMode } from "./deploy.ts";
 
 const apk = { path: "/x/app.apk", name: "android-staging-release.apk", size: 600 * 1048576 };
 const ipa = { path: "/x/app.ipa", name: "ios-staging-release.ipa", size: 97 * 1048576 };
@@ -73,18 +73,15 @@ test("together: each file goes up as its build finishes, then all are shared onc
   assert.equal(deployer.lastPosted("demo", d.key), "full-sha-1");
 });
 
-test("together: an upload older than Slack is known to keep is sent again before sharing", async () => {
+test("together: an upload staged long before the share is shared as it is", async () => {
   const { deployer, d, set, log, later } = setup();
   deployer.add(d);
   await set("a", { status: "succeeded", file: apk });
-  later(STAGED_FOR + 1);
+  later(60 * 60_000);
   await set("i", { status: "succeeded", file: ipa });
-  assert.deepEqual(log.slice(0, 3), [
-    "upload android-staging-release.apk → U1",
-    "upload ios-staging-release.ipa → U2",
-    "upload android-staging-release.apk → U3",
-  ]);
-  assert.match(log[3], /^share U3,U2 in #fledge-experiment: /);
+  assert.deepEqual(log.slice(0, 2), ["upload android-staging-release.apk → U1", "upload ios-staging-release.ipa → U2"]);
+  assert.match(log[2], /^share U1,U2 in #fledge-experiment: /);
+  assert.equal(log.length, 3);
 });
 
 test("together: a share Slack refuses sends every file again once; twice fails with the reason", async () => {

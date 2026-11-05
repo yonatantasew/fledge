@@ -103,7 +103,7 @@ export type UploadProgress = (file: string, sent: number, total: number) => void
 /**
  * Sends one file's bytes to Slack, streamed from disk, without sharing it
  * anywhere yet: shareFiles does that (Slack kept such an upload for at least
- * 15 minutes in a test; it discards ones never shared). Returns its id.
+ * 34 minutes; it discards ones never shared). Returns its id.
  */
 export async function uploadFile(token: string, file: { path: string; name: string }, progress: UploadProgress = () => {}) {
   const { size } = await stat(file.path);

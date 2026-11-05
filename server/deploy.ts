@@ -64,9 +64,6 @@ export function deployKey(route: string | null, channel: string, environments: s
   return route ? `route:${route}` : `once:${channel}:${[...new Set(environments)].sort().join(",")}`;
 }
 
-// Slack kept an unshared upload 15 minutes in a test; older ones are sent again before sharing.
-export const STAGED_FOR = 15 * 60_000;
-
 const mb = (n: number) => `${(n / 1048576).toFixed(n < 10 * 1048576 ? 1 : 0)} MB`;
 const finished = (b: DeployBuild | undefined) => !!b && (b.status === "succeeded" || b.status === "failed" || b.status === "cancelled");
 const built = (b: DeployBuild | undefined): b is DeployBuild & { file: NonNullable<DeployBuild["file"]> } => b?.status === "succeeded" && !!b.file;
@@ -184,7 +181,12 @@ export class Deployer {
     (d.staged ??= {})[id] = { id: uploadId, name: file.name, at: this.now() };
   }
 
-  /** together: shares every staged file in one message with the notes, sending stale ones again first. */
+  /**
+   * together: shares every staged file in one message with the notes. However
+   * old an upload is, it's shared as it is: Slack has kept one 34 minutes, and
+   * how long it keeps them isn't documented. Only a share Slack refuses sends
+   * the files again.
+   */
   private async shareTogether(d: Deployment) {
     const builds = d.builds.map((id) => ({ id, b: this.deps.build(id) }));
     const ok = builds.filter(({ b }) => built(b));
@@ -192,8 +194,7 @@ export class Deployer {
     d.status = "posting";
     this.deps.changed(this.list);
     for (const { id, b } of ok) {
-      const s = d.staged?.[id];
-      if (!s || this.now() - s.at > STAGED_FOR) await this.stage(d, id, b!);
+      if (!d.staged?.[id]) await this.stage(d, id, b!);
     }
     const missing = builds.filter(({ b }) => !built(b));
     const text = [
