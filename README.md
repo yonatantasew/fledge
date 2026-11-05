@@ -479,7 +479,9 @@ reason and can be posted again. Files stream from disk, so a 600 MB APK
 never sits in memory, and one message holds at most 10 files. Slack keeps an
 uploaded but unshared file for a while (at least 34 minutes), so files are
 shared however long ago they went up; only if Slack refuses the post are
-they all uploaded again, once.
+they all uploaded again, once. While a file goes up, its deployment shows a bar
+with which file of how many it is, the speed and the time left for it, and
+each of its builds says whether its file is uploaded.
 
 Routes go in the app's config:
 

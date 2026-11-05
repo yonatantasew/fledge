@@ -18,6 +18,45 @@ const STATE: Record<DeployStatus, { icon: IconSvgElement; className: string; lab
 };
 const ACTIVE: DeployStatus[] = ["building", "posting", "held", "failed"];
 
+const mb = (n: number) => `${(n / 1048576).toFixed(n < 10 * 1048576 ? 1 : 0)} MB`;
+
+function duration(s: number) {
+  const m = Math.round(s / 60);
+  return s < 60 ? "under a minute" : m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
+}
+
+/** Which of its builds' files have gone up: staged (together) or posted (as each finishes). */
+function uploadedOf(d: Deployment) {
+  return new Set(d.mode === "as-built" ? (d.handled ?? []) : Object.keys(d.staged ?? {}));
+}
+
+/** The file going up now: a bar, which file of how many, its speed and what's left of it. */
+function UploadProgress({ d }: { d: Deployment }) {
+  const u = d.upload!;
+  const pct = u.total ? Math.min(100, (u.sent / u.total) * 100) : 0;
+  const secs = (Date.now() - u.startedAt) / 1000;
+  const rate = secs > 2 ? u.sent / secs : 0; // bytes a second; too soon to say in the first moments
+  const done = uploadedOf(d).size;
+  return (
+    <div className="space-y-1 px-3 pb-2">
+      <div className="h-1.5 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(pct)} aria-label={`Uploading ${u.name}`}>
+        <div className="h-full rounded-full bg-info transition-[width] duration-700" style={{ width: `${pct}%` }} />
+      </div>
+      <p className="flex flex-wrap gap-x-2 text-xs text-muted-foreground">
+        <span className="min-w-0 truncate font-medium text-foreground">{u.name}</span>
+        <span>
+          file {Math.min(done + 1, d.builds.length)} of {d.builds.length}
+        </span>
+        <span>
+          {mb(u.sent)} / {mb(u.total)} ({Math.floor(pct)}%)
+        </span>
+        {rate > 0 && <span>{mb(rate)}/s</span>}
+        {rate > 0 && u.sent < u.total && <span>about {duration((u.total - u.sent) / rate)} left for this file</span>}
+      </p>
+    </div>
+  );
+}
+
 function ago(t: number) {
   const m = Math.round((Date.now() - t) / 60_000);
   return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 24 * 60 ? `${Math.round(m / 60)} h ago` : new Date(t).toLocaleDateString();
@@ -53,6 +92,7 @@ function DeploymentRow({ d, jobs, onSelect }: { d: Deployment; jobs: Job[]; onSe
   const [error, setError] = useState<string | null>(null);
   const st = STATE[d.status];
   const builds = d.builds.map((id) => jobs.find((j) => j.id === id));
+  const uploaded = uploadedOf(d);
   const act = (run: () => Promise<unknown>) => () => {
     setError(null);
     void run().catch((e: Error) => setError(e.message));
@@ -82,7 +122,8 @@ function DeploymentRow({ d, jobs, onSelect }: { d: Deployment; jobs: Job[]; onSe
           )}
         </span>
         <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={d.error ?? d.progress}>
-          {d.progress ??
+          {(d.upload && `uploading, ${uploaded.size} of ${d.builds.length} up`) ??
+            d.progress ??
             d.error ??
             (d.status === "building" && d.staged && Object.keys(d.staged).length
               ? `${Object.keys(d.staged).length} of ${d.builds.length} uploaded, waiting for the rest`
@@ -101,6 +142,7 @@ function DeploymentRow({ d, jobs, onSelect }: { d: Deployment; jobs: Job[]; onSe
           </Button>
         )}
       </div>
+      {d.upload && <UploadProgress d={d} />}
       {error && <p className="px-3 pb-2 text-xs text-destructive">{error}</p>}
       {open && (
         <div className="grid gap-3 border-t px-3 py-2 md:grid-cols-[minmax(0,1fr)_16rem]">
@@ -113,7 +155,14 @@ function DeploymentRow({ d, jobs, onSelect }: { d: Deployment; jobs: Job[]; onSe
                     <HugeiconsIcon icon={STATUS[b.status].icon} className={cn("size-3.5", STATUS[b.status].className)} />
                     <HugeiconsIcon icon={PLATFORM_ICON[b.platform]} className="size-3.5 text-muted-foreground" />
                     {flavorLabel(b.flavor)} {MODE_LABEL[b.mode]} {b.artifact}
-                    <HugeiconsIcon icon={ArrowRight01Icon} className="ml-auto size-3 text-muted-foreground" />
+                    <span className="ml-auto text-muted-foreground">
+                      {d.upload?.build === b.id
+                        ? `uploading ${d.upload.total ? Math.floor((d.upload.sent / d.upload.total) * 100) : 0}%`
+                        : uploaded.has(b.id) && d.status !== "posted"
+                          ? "uploaded"
+                          : ""}
+                    </span>
+                    <HugeiconsIcon icon={ArrowRight01Icon} className="size-3 text-muted-foreground" />
                   </button>
                 </li>
               ) : (

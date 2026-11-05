@@ -602,6 +602,8 @@ export interface Deployment {
   status: DeployStatus;
   error?: string;
   progress?: string;
+  upload?: { build: string; name: string; sent: number; total: number; startedAt: number };
+  handled?: string[];
   createdAt: number;
   endedAt?: number;
   posted?: { at: number; files: string[]; missing: string[] };
